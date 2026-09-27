@@ -50,6 +50,7 @@ const settingsSchema = z.object({
   cancellationFeeType: z.enum(["fixed", "percentage"]),
   cancellationFeeAmount: z.coerce.number().min(0),
   cancellationFeePercentage: z.coerce.number().min(0).max(100),
+  cancellationWindowHours: z.coerce.number().int().min(0),
 
   lateFeePerToteDay: z.coerce.number().min(0),
   damagedToteFee: z.coerce.number().min(0),
@@ -97,6 +98,7 @@ export async function updateSettingsAction(
     cancellationFeeType: formData.get("cancellationFeeType"),
     cancellationFeeAmount: formData.get("cancellationFeeAmount"),
     cancellationFeePercentage: formData.get("cancellationFeePercentage"),
+    cancellationWindowHours: formData.get("cancellationWindowHours"),
     lateFeePerToteDay: formData.get("lateFeePerToteDay"),
     damagedToteFee: formData.get("damagedToteFee"),
     lostToteFee: formData.get("lostToteFee"),
@@ -149,6 +151,7 @@ export async function updateSettingsAction(
     cancellationFeeType: data.cancellationFeeType,
     cancellationFeeAmountCents: dollarsToCents(data.cancellationFeeAmount),
     cancellationFeePercentage: data.cancellationFeePercentage.toFixed(2),
+    cancellationWindowHours: data.cancellationWindowHours,
     lateFeeCentsPerToteDay: dollarsToCents(data.lateFeePerToteDay),
     damagedToteFeeCents: dollarsToCents(data.damagedToteFee),
     lostToteFeeCents: dollarsToCents(data.lostToteFee),

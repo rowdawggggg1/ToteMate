@@ -31,6 +31,7 @@ export type SettingsInitialValues = {
   cancellationFeeType: "fixed" | "percentage";
   cancellationFeeAmount: string;
   cancellationFeePercentage: string;
+  cancellationWindowHours: number;
   lateFeePerToteDay: string;
   damagedToteFee: string;
   lostToteFee: string;
@@ -330,9 +331,23 @@ export function SettingsForm({
             />
           </Field>
         </div>
+        <Field
+          label="Refund cutoff (hours before scheduled delivery)"
+          htmlFor="cancellationWindowHours"
+          hint="Cancelling inside this window means no refund at all, regardless of the fee settings above."
+        >
+          <input
+            id="cancellationWindowHours"
+            name="cancellationWindowHours"
+            type="number"
+            min={0}
+            defaultValue={initialValues.cancellationWindowHours}
+            className={inputClass}
+          />
+        </Field>
         <p className="text-xs text-[var(--color-muted)]">
-          There is no refund within 24 hours of the scheduled delivery, regardless of
-          this setting.
+          Example: with the default of 24, cancelling more than 24 hours before delivery
+          follows the fee settings above; cancelling within 24 hours gets no refund.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-3">

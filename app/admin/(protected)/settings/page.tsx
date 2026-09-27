@@ -41,6 +41,7 @@ export default async function AdminSettingsPage() {
       ? centsToDollarsString(s.cancellationFeeAmountCents)
       : "0.00",
     cancellationFeePercentage: s?.cancellationFeePercentage ?? "0.00",
+    cancellationWindowHours: s?.cancellationWindowHours ?? 24,
     lateFeePerToteDay: s ? centsToDollarsString(s.lateFeeCentsPerToteDay) : "0.00",
     damagedToteFee: s ? centsToDollarsString(s.damagedToteFeeCents) : "0.00",
     lostToteFee: s ? centsToDollarsString(s.lostToteFeeCents) : "0.00",

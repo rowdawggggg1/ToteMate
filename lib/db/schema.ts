@@ -120,6 +120,12 @@ export const businessSettings = pgTable("business_settings", {
   })
     .notNull()
     .default("0"),
+  // Hours before scheduled delivery required to qualify for the
+  // configured cancellation refund rule at all. Cancelling inside this
+  // window means no refund, regardless of the fee settings above.
+  cancellationWindowHours: integer("cancellation_window_hours")
+    .notNull()
+    .default(24),
 
   lateFeeCentsPerToteDay: integer("late_fee_cents_per_tote_day")
     .notNull()
@@ -162,6 +168,89 @@ export const auditLogs = pgTable("audit_logs", {
   afterValue: jsonb("after_value"),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Rental packages shown on the public site. New packages default to
+ * inactive so an incomplete package can never accidentally become
+ * publicly bookable (Section 9.24). "price" is the flat price for the
+ * package's standard rental period (rentalDurationWeeks) -- full weeks
+ * only, per the final amendment (no prorated/daily pricing). A package's
+ * own weekly extension price is modeled separately as a package-specific
+ * add-on (see addOns.isWeeklyExtension below), not as a column here.
+ */
+export const packages = pgTable("packages", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  description: text("description"),
+  toteQuantity: integer("tote_quantity").notNull(),
+  priceCents: integer("price_cents").notNull(),
+  rentalDurationWeeks: integer("rental_duration_weeks").notNull().default(1),
+  includesDolly: boolean("includes_dolly").notNull().default(false),
+  useCaseDescription: text("use_case_description"),
+  photoUrl: text("photo_url"),
+  isActive: boolean("is_active").notNull().default(false),
+  isFeatured: boolean("is_featured").notNull().default(false),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Add-ons. When packageId is set, the add-on is only offered alongside
+ * that specific package (this is how package-specific weekly-extension
+ * add-ons are modeled, per the final amendment: "the weekly rental
+ * extension add-on must be associated with a specific package"). When
+ * packageId is null, the add-on is available with any package.
+ * isWeeklyExtension marks which one add-on (if any) is "the" extra-week
+ * option for its package; only one per package is enforced in the action.
+ */
+export const addOns = pgTable("add_ons", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  description: text("description"),
+  priceCents: integer("price_cents").notNull(),
+  imageUrl: text("image_url"),
+  isActive: boolean("is_active").notNull().default(false),
+  displayOrder: integer("display_order").notNull().default(0),
+  packageId: uuid("package_id").references(() => packages.id, {
+    onDelete: "cascade",
+  }),
+  isWeeklyExtension: boolean("is_weekly_extension").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Public FAQ entries. Defaults to active since this is low-risk marketing
+ * copy, unlike packages/add-ons which touch pricing.
+ */
+export const faqs = pgTable("faqs", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  question: text("question").notNull(),
+  answer: text("answer").notNull(),
+  displayOrder: integer("display_order").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
