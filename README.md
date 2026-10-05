@@ -48,6 +48,37 @@ Not built yet: the real booking flow, Stripe payments, the admin
 calendar, inventory/tote management, the Realtor portal, driver accounts,
 financial reporting, referrals, gift certificates, and reviews.
 
+## Phase 2 update: branding, photos, and SMS contact
+
+Patched into Phase 2 after initial delivery, in response to feedback that
+the public site had no way to customize its look:
+
+* **Business Settings → Branding & Photos**: logo URL, hero image URL, and
+  three color pickers (primary / accent / background) that re-skin the
+  public site's CSS variables at runtime -- no rebuild or redeploy needed.
+  There's no file-upload widget yet; paste a link to an image hosted
+  elsewhere (e.g. an image host, or your own storage once that exists).
+* **Package photos**: packages already had a `photoUrl` field in the admin
+  form; it's now actually rendered on the public package cards.
+* **Homepage hero redesign**: two-column layout with headline/CTAs on one
+  side and either your hero image or a simple built-in illustration on the
+  other, instead of the old centered-text-only hero.
+* **Text instead of Call**: the phone number on the homepage, footer, and
+  anywhere else it appears now links via `sms:` and says "Text Us" /
+  "Text {number}" instead of `tel:` / "Call Us", since this business wants
+  texts, not calls.
+* **Maximum delivery radius**: a new optional "hard cutoff" setting
+  (Business Settings → Delivery & Pickup Pricing), separate from the
+  existing free-radius pricing threshold. It just stores the admin's
+  chosen limit for now -- actually rejecting out-of-range addresses at
+  booking time is implemented in the booking phase.
+
+Database-wise, this adds five columns to `business_settings`:
+`primary_color`, `accent_color`, `background_color`, `hero_image_url`,
+`max_delivery_radius_km`. Same update instructions apply: overwrite your
+Replit project, push, re-run `npm run db:push` -- additive only, nothing
+dropped.
+
 ## Tech stack
 
 * Next.js 16 (App Router, Server Actions)

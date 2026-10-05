@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { businessSettings } from "@/lib/db/schema";
+import { buildPublicThemeStyle } from "@/lib/theme";
 import { SiteHeader } from "@/components/public/site-header";
 import { SiteFooter } from "@/components/public/site-footer";
 
@@ -15,10 +16,11 @@ export default async function RealtorsPage() {
     .limit(1);
   const settings = settingsRows[0];
   const businessName = settings?.businessName ?? "ToteMate";
+  const themeStyle = buildPublicThemeStyle(settings);
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <SiteHeader businessName={businessName} />
+    <div style={themeStyle} className="flex min-h-screen flex-col bg-[var(--color-background)]">
+      <SiteHeader businessName={businessName} logoUrl={settings?.logoUrl} />
       <main className="flex flex-1 items-center justify-center px-4 py-20 text-center">
         <div className="max-w-md">
           <h1 className="font-serif text-3xl font-semibold text-[var(--color-text)]">

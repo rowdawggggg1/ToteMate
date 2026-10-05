@@ -77,6 +77,16 @@ export const businessSettings = pgTable("business_settings", {
   serviceArea: text("service_area"),
   logoUrl: text("logo_url"),
 
+  // Public-site theming. Each is a #rrggbb hex string; defaults match the
+  // original hard-coded design tokens in app/globals.css so existing sites
+  // look unchanged until an admin picks new colors.
+  primaryColor: text("primary_color").notNull().default("#2f5233"),
+  accentColor: text("accent_color").notNull().default("#c98a4b"),
+  backgroundColor: text("background_color").notNull().default("#faf8f3"),
+  // Optional large image shown in the homepage hero. Falls back to a
+  // built-in illustration when not set.
+  heroImageUrl: text("hero_image_url"),
+
   minLeadTimeDays: integer("min_lead_time_days").notNull().default(2),
 
   deliveryFreeRadiusKm: numeric("delivery_free_radius_km", {
@@ -91,6 +101,15 @@ export const businessSettings = pgTable("business_settings", {
   })
     .notNull()
     .default("0"),
+  // Hard service-area cutoff, distinct from the free-radius pricing
+  // thresholds above: an address farther than this from the business
+  // should be rejected at booking time rather than just priced higher.
+  // Null means no hard cutoff is enforced. Enforcement itself happens in
+  // the booking phase -- this column just stores the admin's chosen limit.
+  maxDeliveryRadiusKm: numeric("max_delivery_radius_km", {
+    precision: 6,
+    scale: 2,
+  }),
   deliveryRateCentsPerKm: integer("delivery_rate_cents_per_km")
     .notNull()
     .default(0),

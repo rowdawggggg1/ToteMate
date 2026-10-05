@@ -11,14 +11,25 @@ const NAV_LINKS = [
   { href: "/#contact", label: "Contact" },
 ];
 
-export function SiteHeader({ businessName }: { businessName: string }) {
+export function SiteHeader({
+  businessName,
+  logoUrl,
+}: {
+  businessName: string;
+  logoUrl?: string | null;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--color-surface)]/95 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
-        <Link href="/" className="font-serif text-xl font-semibold text-[var(--color-text)]">
-          {businessName}
+        <Link href="/" className="flex items-center gap-2 font-serif text-xl font-semibold text-[var(--color-text)]">
+          {logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- admin-provided external URL, not a known static asset
+            <img src={logoUrl} alt={businessName} className="h-9 w-auto object-contain" />
+          ) : (
+            businessName
+          )}
         </Link>
 
         <nav className="hidden items-center gap-6 md:flex">

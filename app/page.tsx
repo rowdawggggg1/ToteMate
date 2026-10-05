@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { businessSettings } from "@/lib/db/schema";
 import { getActiveFaqs, getActivePackages } from "@/lib/catalog";
+import { buildPublicThemeStyle } from "@/lib/theme";
 import { SiteHeader } from "@/components/public/site-header";
 import { SiteFooter } from "@/components/public/site-footer";
 import { PackageCard } from "@/components/public/package-card";
@@ -60,10 +61,16 @@ export default async function HomePage() {
   const contactEmail = settings?.contactEmail ?? null;
   const contactPhone = settings?.contactPhone ?? null;
   const serviceArea = settings?.serviceArea ?? null;
+  const logoUrl = settings?.logoUrl ?? null;
+  const heroImageUrl = settings?.heroImageUrl ?? null;
+  const themeStyle = buildPublicThemeStyle(settings);
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <SiteHeader businessName={businessName} />
+    <div
+      style={themeStyle}
+      className="flex min-h-screen flex-col bg-[var(--color-background)]"
+    >
+      <SiteHeader businessName={businessName} logoUrl={logoUrl} />
 
       <main className="flex-1">
         {loadError && (
@@ -74,27 +81,50 @@ export default async function HomePage() {
         )}
 
         {/* Hero */}
-        <section className="mx-auto max-w-6xl px-4 py-16 text-center sm:px-6 sm:py-24">
-          <h1 className="font-serif text-4xl font-semibold text-[var(--color-text)] sm:text-5xl">
-            Move smarter with reusable totes
-          </h1>
-          <p className="mx-auto mt-4 max-w-xl text-[var(--color-muted)]">
-            {tagline ??
-              "We deliver sturdy, reusable moving totes to your door and pick them up when you're done -- no cardboard required."}
-          </p>
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <a
-              href="/book"
-              className="rounded-lg bg-[var(--color-primary)] px-6 py-3 text-sm font-medium text-white"
-            >
-              Book Now
-            </a>
-            <a
-              href="#how-it-works"
-              className="rounded-lg border border-[var(--color-border)] px-6 py-3 text-sm font-medium text-[var(--color-text)]"
-            >
-              See How It Works
-            </a>
+        <section className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 sm:py-24 lg:grid-cols-2 lg:gap-16">
+          <div className="text-center lg:text-left">
+            <span className="inline-block rounded-full bg-[var(--color-accent)]/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-accent)]">
+              Reusable moving totes
+            </span>
+            <h1 className="mt-4 font-serif text-4xl font-semibold leading-tight text-[var(--color-text)] sm:text-5xl">
+              Move smarter, skip the cardboard
+            </h1>
+            <p className="mx-auto mt-4 max-w-xl text-[var(--color-muted)] lg:mx-0">
+              {tagline ??
+                "We deliver sturdy, reusable moving totes to your door and pick them up when you're done -- no cardboard required."}
+            </p>
+            <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row lg:justify-start">
+              <a
+                href="/book"
+                className="rounded-lg bg-[var(--color-primary)] px-6 py-3 text-sm font-medium text-white"
+              >
+                Book Now
+              </a>
+              <a
+                href="#how-it-works"
+                className="rounded-lg border border-[var(--color-border)] px-6 py-3 text-sm font-medium text-[var(--color-text)]"
+              >
+                See How It Works
+              </a>
+            </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-[var(--color-muted)] lg:justify-start">
+              <span>✓ Delivered &amp; picked up</span>
+              <span>✓ Waterproof &amp; stackable</span>
+              <span>✓ Nothing to break down</span>
+            </div>
+          </div>
+
+          <div className="relative">
+            {heroImageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element -- admin-provided external URL
+              <img
+                src={heroImageUrl}
+                alt={`${businessName} totes`}
+                className="aspect-[4/3] w-full rounded-3xl object-cover shadow-lg"
+              />
+            ) : (
+              <ToteStackIllustration className="aspect-[4/3] w-full rounded-3xl bg-[var(--color-surface)] shadow-lg" />
+            )}
           </div>
         </section>
 
@@ -225,10 +255,10 @@ export default async function HomePage() {
                 )}
                 {contactPhone && (
                   <a
-                    href={`tel:${contactPhone}`}
+                    href={`sms:${contactPhone}`}
                     className="rounded-lg border border-[var(--color-border)] px-5 py-2.5 text-sm font-medium text-[var(--color-text)]"
                   >
-                    Call Us
+                    Text Us
                   </a>
                 )}
               </div>
@@ -257,5 +287,34 @@ export default async function HomePage() {
         serviceArea={serviceArea}
       />
     </div>
+  );
+}
+
+/**
+ * Default hero artwork shown when no hero image URL is set in Business
+ * Settings -- a simple stack of totes so the homepage never looks empty.
+ */
+function ToteStackIllustration({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 400 300"
+      className={className}
+      role="img"
+      aria-label="Illustration of stacked moving totes"
+    >
+      <rect width="400" height="300" fill="var(--color-surface)" />
+      <g>
+        <rect x="90" y="180" width="220" height="80" rx="14" fill="var(--color-primary)" />
+        <rect x="90" y="180" width="220" height="18" rx="9" fill="var(--color-primary-dark)" />
+        <rect x="130" y="150" width="140" height="20" rx="6" fill="var(--color-primary-dark)" />
+
+        <rect x="115" y="95" width="170" height="80" rx="14" fill="var(--color-secondary)" />
+        <rect x="115" y="95" width="170" height="18" rx="9" fill="var(--color-primary)" />
+        <rect x="150" y="65" width="100" height="20" rx="6" fill="var(--color-primary)" />
+
+        <rect x="140" y="20" width="120" height="70" rx="14" fill="var(--color-accent)" />
+        <rect x="140" y="20" width="120" height="16" rx="8" fill="var(--color-primary-dark)" />
+      </g>
+    </svg>
   );
 }

@@ -11,22 +11,34 @@ export type PublicPackage = {
   includesDolly: boolean;
   useCaseDescription: string | null;
   isFeatured: boolean;
+  photoUrl: string | null;
 };
 
 export function PackageCard({ pkg }: { pkg: PublicPackage }) {
   return (
     <div
-      className={`relative flex flex-col rounded-2xl border bg-[var(--color-surface)] p-6 shadow-sm ${
+      className={`relative flex flex-col overflow-hidden rounded-2xl border bg-[var(--color-surface)] shadow-sm ${
         pkg.isFeatured
           ? "border-[var(--color-primary)] ring-1 ring-[var(--color-primary)]"
           : "border-[var(--color-border)]"
       }`}
     >
       {pkg.isFeatured && (
-        <span className="absolute -top-3 left-6 rounded-full bg-[var(--color-primary)] px-3 py-1 text-xs font-medium text-white">
+        <span className="absolute left-6 top-3 z-10 rounded-full bg-[var(--color-primary)] px-3 py-1 text-xs font-medium text-white">
           Most Popular
         </span>
       )}
+
+      {pkg.photoUrl && (
+        // eslint-disable-next-line @next/next/no-img-element -- admin-provided external URL
+        <img
+          src={pkg.photoUrl}
+          alt={pkg.name}
+          className="h-40 w-full object-cover"
+        />
+      )}
+
+      <div className="flex flex-1 flex-col p-6">
 
       <h3 className="text-lg font-semibold text-[var(--color-text)]">{pkg.name}</h3>
 
@@ -56,6 +68,7 @@ export function PackageCard({ pkg }: { pkg: PublicPackage }) {
       >
         Book Now
       </Link>
+      </div>
     </div>
   );
 }

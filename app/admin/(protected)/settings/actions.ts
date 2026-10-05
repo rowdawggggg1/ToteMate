@@ -16,6 +16,17 @@ const optionalNonNegInt = z.preprocess((val) => {
   return val;
 }, z.coerce.number().int().min(0).optional());
 
+/** Same idea as optionalNonNegInt, but for decimal fields (e.g. km). */
+const optionalNonNegDecimal = z.preprocess((val) => {
+  if (val === "" || val === null || val === undefined) return undefined;
+  return val;
+}, z.coerce.number().min(0).optional());
+
+const hexColor = z
+  .string()
+  .trim()
+  .regex(/^#[0-9a-fA-F]{6}$/, "Enter a color as #rrggbb.");
+
 const settingsSchema = z.object({
   businessName: z.string().trim().min(1, "Business name is required."),
   tagline: z.string().trim().optional().default(""),
@@ -32,10 +43,15 @@ const settingsSchema = z.object({
   timezone: z.string().trim().min(1),
   serviceArea: z.string().trim().optional().default(""),
   logoUrl: z.string().trim().url("Enter a valid URL.").or(z.literal("")).default(""),
+  heroImageUrl: z.string().trim().url("Enter a valid URL.").or(z.literal("")).default(""),
+  primaryColor: hexColor,
+  accentColor: hexColor,
+  backgroundColor: hexColor,
 
   minLeadTimeDays: z.coerce.number().int().min(0),
   deliveryFreeRadiusKm: z.coerce.number().min(0),
   pickupFreeRadiusKm: z.coerce.number().min(0),
+  maxDeliveryRadiusKm: optionalNonNegDecimal,
   deliveryRatePerKm: z.coerce.number().min(0),
   pickupRatePerKm: z.coerce.number().min(0),
   readinessBufferDays: z.coerce.number().int().min(0),
@@ -84,9 +100,14 @@ export async function updateSettingsAction(
     timezone: formData.get("timezone"),
     serviceArea: formData.get("serviceArea"),
     logoUrl: formData.get("logoUrl"),
+    heroImageUrl: formData.get("heroImageUrl"),
+    primaryColor: formData.get("primaryColor"),
+    accentColor: formData.get("accentColor"),
+    backgroundColor: formData.get("backgroundColor"),
     minLeadTimeDays: formData.get("minLeadTimeDays"),
     deliveryFreeRadiusKm: formData.get("deliveryFreeRadiusKm"),
     pickupFreeRadiusKm: formData.get("pickupFreeRadiusKm"),
+    maxDeliveryRadiusKm: formData.get("maxDeliveryRadiusKm"),
     deliveryRatePerKm: formData.get("deliveryRatePerKm"),
     pickupRatePerKm: formData.get("pickupRatePerKm"),
     readinessBufferDays: formData.get("readinessBufferDays"),
@@ -137,9 +158,15 @@ export async function updateSettingsAction(
     timezone: data.timezone,
     serviceArea: data.serviceArea || null,
     logoUrl: data.logoUrl || null,
+    heroImageUrl: data.heroImageUrl || null,
+    primaryColor: data.primaryColor,
+    accentColor: data.accentColor,
+    backgroundColor: data.backgroundColor,
     minLeadTimeDays: data.minLeadTimeDays,
     deliveryFreeRadiusKm: data.deliveryFreeRadiusKm.toFixed(2),
     pickupFreeRadiusKm: data.pickupFreeRadiusKm.toFixed(2),
+    maxDeliveryRadiusKm:
+      data.maxDeliveryRadiusKm === undefined ? null : data.maxDeliveryRadiusKm.toFixed(2),
     deliveryRateCentsPerKm: dollarsToCents(data.deliveryRatePerKm),
     pickupRateCentsPerKm: dollarsToCents(data.pickupRatePerKm),
     readinessBufferDays: data.readinessBufferDays,

@@ -50,8 +50,8 @@ export function SiteFooter({
               </a>
             )}
             {contactPhone && (
-              <a href={`tel:${contactPhone}`} className="text-[var(--color-text)] hover:underline">
-                {contactPhone}
+              <a href={`sms:${contactPhone}`} className="text-[var(--color-text)] hover:underline">
+                Text {contactPhone}
               </a>
             )}
             <Link

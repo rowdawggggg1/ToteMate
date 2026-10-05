@@ -17,9 +17,14 @@ export type SettingsInitialValues = {
   timezone: string;
   serviceArea: string;
   logoUrl: string;
+  heroImageUrl: string;
+  primaryColor: string;
+  accentColor: string;
+  backgroundColor: string;
   minLeadTimeDays: number;
   deliveryFreeRadiusKm: string;
   pickupFreeRadiusKm: string;
+  maxDeliveryRadiusKm: number | string;
   deliveryRatePerKm: string;
   pickupRatePerKm: string;
   readinessBufferDays: number;
@@ -136,8 +141,15 @@ export function SettingsForm({
             className={inputClass}
           />
         </Field>
+      </Section>
 
-        <Field label="Logo image URL" htmlFor="logoUrl" error={errors.logoUrl}>
+      <Section title="Branding & Photos">
+        <Field
+          label="Logo URL"
+          htmlFor="logoUrl"
+          error={errors.logoUrl}
+          hint="Shown in the site header. Paste a link to an image you've uploaded somewhere (e.g. an image host or your own file storage) -- there's no file upload here yet."
+        >
           <input
             id="logoUrl"
             name="logoUrl"
@@ -145,6 +157,41 @@ export function SettingsForm({
             className={inputClass}
           />
         </Field>
+
+        <Field
+          label="Hero image URL"
+          htmlFor="heroImageUrl"
+          error={errors.heroImageUrl}
+          hint="Shown large on the homepage. Leave blank to use the default illustration."
+        >
+          <input
+            id="heroImageUrl"
+            name="heroImageUrl"
+            defaultValue={initialValues.heroImageUrl}
+            className={inputClass}
+          />
+        </Field>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <ColorField
+            label="Primary color"
+            id="primaryColor"
+            defaultValue={initialValues.primaryColor}
+            error={errors.primaryColor}
+          />
+          <ColorField
+            label="Accent color"
+            id="accentColor"
+            defaultValue={initialValues.accentColor}
+            error={errors.accentColor}
+          />
+          <ColorField
+            label="Background color"
+            id="backgroundColor"
+            defaultValue={initialValues.backgroundColor}
+            error={errors.backgroundColor}
+          />
+        </div>
       </Section>
 
       <Section title="Service Area">
@@ -242,6 +289,23 @@ export function SettingsForm({
             />
           </Field>
         </div>
+
+        <Field
+          label="Maximum delivery radius (km)"
+          htmlFor="maxDeliveryRadiusKm"
+          error={errors.maxDeliveryRadiusKm}
+          hint="A hard cutoff, separate from the free radius above. Addresses farther than this will be rejected at booking instead of just priced higher. Leave blank for no limit."
+        >
+          <input
+            id="maxDeliveryRadiusKm"
+            name="maxDeliveryRadiusKm"
+            type="number"
+            step="0.01"
+            min={0}
+            defaultValue={initialValues.maxDeliveryRadiusKm}
+            className={inputClass}
+          />
+        </Field>
       </Section>
 
       <Section title="Capacity & Inventory">
@@ -421,6 +485,41 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       </legend>
       {children}
     </fieldset>
+  );
+}
+
+function ColorField({
+  label,
+  id,
+  defaultValue,
+  error,
+}: {
+  label: string;
+  id: string;
+  defaultValue: string;
+  error?: string;
+}) {
+  return (
+    <Field label={label} htmlFor={id} error={error}>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          defaultValue={defaultValue}
+          onChange={(e) => {
+            const text = document.getElementById(id) as HTMLInputElement | null;
+            if (text) text.value = e.target.value;
+          }}
+          className="h-10 w-12 shrink-0 cursor-pointer rounded border border-[var(--color-border)] bg-transparent p-1"
+          aria-label={`${label} picker`}
+        />
+        <input
+          id={id}
+          name={id}
+          defaultValue={defaultValue}
+          className={inputClass}
+        />
+      </div>
+    </Field>
   );
 }
 
