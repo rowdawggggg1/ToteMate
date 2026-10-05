@@ -38,7 +38,11 @@ export function PackageCard({ pkg }: { pkg: PublicPackage }) {
         />
       )}
 
-      <div className="flex flex-1 flex-col p-6">
+      <div
+        className={`flex flex-1 flex-col p-6 ${
+          pkg.isFeatured && !pkg.photoUrl ? "pt-10" : ""
+        }`}
+      >
 
       <h3 className="text-lg font-semibold text-[var(--color-text)]">{pkg.name}</h3>
 

@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
-import { packages } from "@/lib/db/schema";
+import { orders, packages } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth/admin";
 import { writeAudit } from "@/lib/audit";
 import { dollarsToCents } from "@/lib/money";
@@ -245,10 +245,35 @@ export async function deletePackageAction(packageId: string): Promise<void> {
   const existing = rows[0];
   if (!existing) return;
 
-  // Safe to hard-delete for now because no orders exist yet to reference a
-  // package. Once the booking phase adds orders, this must be changed to
-  // check for referencing orders first and deactivate instead of deleting
-  // if any exist (per spec Section 9.25-9.26).
+  // Per spec Section 9.25-9.26: once any order references this package
+  // (even a historical one), it can never be hard-deleted -- that would
+  // corrupt the order's own foreign key and audit trail. Deactivate
+  // instead so it just disappears from the public site.
+  const referencingOrder = await db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(eq(orders.packageId, packageId))
+    .limit(1);
+
+  if (referencingOrder.length > 0) {
+    await db
+      .update(packages)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(packages.id, packageId));
+
+    await writeAudit({
+      actor: { type: "admin", id: admin.id, email: admin.email },
+      action: "PACKAGE_DEACTIVATED_INSTEAD_OF_DELETED",
+      entityType: "package",
+      entityId: packageId,
+      notes: "Has existing orders -- deactivated rather than deleted.",
+    });
+
+    revalidatePath("/admin/packages");
+    revalidatePath("/");
+    return;
+  }
+
   await db.delete(packages).where(eq(packages.id, packageId));
 
   await writeAudit({

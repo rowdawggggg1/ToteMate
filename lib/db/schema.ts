@@ -7,6 +7,8 @@ import {
   numeric,
   timestamp,
   jsonb,
+  date,
+  unique,
 } from "drizzle-orm/pg-core";
 
 /**
@@ -110,6 +112,34 @@ export const businessSettings = pgTable("business_settings", {
     precision: 6,
     scale: 2,
   }),
+
+  // --- Phase 3: booking/routing/scheduling settings ---
+
+  // Geocoded coordinates of the business origin, used by the routing
+  // service as the starting point for every delivery/pickup route.
+  // Populated automatically when businessAddress is saved (best effort);
+  // admin can override manually if geocoding picks the wrong spot.
+  businessOriginLat: numeric("business_origin_lat", { precision: 9, scale: 6 }),
+  businessOriginLng: numeric("business_origin_lng", { precision: 9, scale: 6 }),
+
+  // Two-letter province/region code addresses must fall within to be
+  // considered in-service-area (e.g. "AB" for Alberta). Kept separate from
+  // the free-text serviceArea description shown to customers so the
+  // routing/booking code has something exact to check against.
+  serviceAreaProvinceCode: text("service_area_province_code").notNull().default("AB"),
+
+  // Which moment of the (day-only) delivery date the cancellation-window
+  // countdown is measured against, since deliveries have no guaranteed
+  // time. "start_of_day" (midnight at the start of the delivery date) is
+  // more protective of the business; "end_of_day" (11:59:59 PM on the
+  // delivery date) is more lenient to the customer. Configurable because
+  // the owner may want to change this later without a code change.
+  cancellationCutoffReference: text("cancellation_cutoff_reference")
+    .notNull()
+    .default("start_of_day"),
+
+  // Current total count of physical totes is derived from the totes table
+  // itself (see `totes` below), not stored here.
   deliveryRateCentsPerKm: integer("delivery_rate_cents_per_km")
     .notNull()
     .default(0),
@@ -270,6 +300,234 @@ export const faqs = pgTable("faqs", {
     .notNull()
     .defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// =====================================================================
+// Phase 3: Booking, Pricing, Payments
+// =====================================================================
+
+/**
+ * Individual physical reusable totes. Deliberately simple per the spec
+ * (Section 16): a business-facing number, a status, and replacement
+ * history -- not a warehouse-management system. `replacesToteId` lets a
+ * replacement unit reuse an old business-facing number while keeping a
+ * distinct underlying identity, so historical rental counts/profit stay
+ * attached to the correct physical unit (Section 19).
+ */
+export const totes = pgTable("totes", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  number: text("number").notNull(),
+  // "ready" | "with_customer" | "needs_cleaning" | "damaged" | "lost" | "retired"
+  status: text("status").notNull().default("ready"),
+  completedRentalCount: integer("completed_rental_count").notNull().default(0),
+  netProfitAttributedCents: integer("net_profit_attributed_cents")
+    .notNull()
+    .default(0),
+  replacesToteId: uuid("replaces_tote_id"),
+  retiredAt: timestamp("retired_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Versioned rental agreement content (Section 21). Only one version is
+ * "active" at a time; new bookings snapshot whichever version is active
+ * at signing time onto the order itself (orders.agreementVersionId +
+ * agreementContentSnapshot), so editing/publishing a new version here
+ * never changes what a past customer is shown to have agreed to.
+ */
+export const rentalAgreementVersions = pgTable("rental_agreement_versions", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  versionLabel: text("version_label").notNull(),
+  content: text("content").notNull(),
+  // "draft" | "active" | "superseded"
+  status: text("status").notNull().default("draft"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+});
+
+/**
+ * Owner-blocked dates (Section 12.7). A date here is unavailable for new
+ * delivery/pickup selections regardless of capacity/inventory.
+ */
+export const blockedDates = pgTable(
+  "blocked_dates",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: date("date").notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [unique().on(table.date)]
+);
+
+/**
+ * The central order record (Section 20). Pricing/package/add-on/address
+ * fields are deliberately duplicated as a frozen snapshot rather than
+ * foreign-keyed live lookups, per the historical-snapshot rule: once an
+ * order is paid, later changes to packages/add-ons/settings must never
+ * alter what this row says the customer bought and paid.
+ */
+export const orders = pgTable("orders", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderNumber: text("order_number").notNull().unique(),
+
+  // Lifecycle status. "draft" | "payment_pending" | "payment_failed" |
+  // "paid" | "scheduled" | "delivered" | "active_rental" | "picked_up" |
+  // "completed" | "cancelled" | "refunded"
+  status: text("status").notNull().default("draft"),
+
+  // --- Customer (snapshot; the booking's own record of who it's for) ---
+  customerName: text("customer_name").notNull(),
+  customerEmail: text("customer_email").notNull(),
+  customerPhone: text("customer_phone").notNull(),
+
+  // --- Package snapshot ---
+  packageId: uuid("package_id").references(() => packages.id),
+  packageName: text("package_name").notNull(),
+  packageToteQuantity: integer("package_tote_quantity").notNull(),
+  packagePriceCents: integer("package_price_cents").notNull(),
+  rentalDurationWeeks: integer("rental_duration_weeks").notNull(),
+  includesDolly: boolean("includes_dolly").notNull().default(false),
+
+  // --- Weekly extension snapshot (at most one, package-specific) ---
+  weeklyExtensionAddOnId: uuid("weekly_extension_add_on_id"),
+  weeklyExtensionName: text("weekly_extension_name"),
+  weeklyExtensionPriceCents: integer("weekly_extension_price_cents"),
+  extensionWeeks: integer("extension_weeks").notNull().default(0),
+
+  // --- Other add-ons snapshot: [{ addOnId, name, priceCents, quantity }] ---
+  addOns: jsonb("add_ons").notNull().default([]),
+
+  // --- Dates ---
+  requestedDeliveryDate: date("requested_delivery_date").notNull(),
+  confirmedDeliveryDate: date("confirmed_delivery_date").notNull(),
+  requestedPickupDate: date("requested_pickup_date").notNull(),
+  confirmedPickupDate: date("confirmed_pickup_date").notNull(),
+  preferredDeliveryWindow: text("preferred_delivery_window"),
+  preferredPickupWindow: text("preferred_pickup_window"),
+  actualDeliveredAt: timestamp("actual_delivered_at", { withTimezone: true }),
+  actualPickedUpAt: timestamp("actual_picked_up_at", { withTimezone: true }),
+
+  // --- Addresses (snapshot; each as { street, city, province, postalCode,
+  //     country, formatted, lat, lng }) ---
+  deliveryAddress: jsonb("delivery_address").notNull(),
+  pickupSameAsDelivery: boolean("pickup_same_as_delivery").notNull().default(true),
+  pickupAddress: jsonb("pickup_address"),
+  deliveryInstructions: text("delivery_instructions"),
+  pickupInstructions: text("pickup_instructions"),
+
+  // --- Routing/pricing snapshot (Section 14/15 historical inputs) ---
+  deliveryDistanceKm: numeric("delivery_distance_km", { precision: 8, scale: 3 }),
+  pickupDistanceKm: numeric("pickup_distance_km", { precision: 8, scale: 3 }),
+  deliveryFreeRadiusKmUsed: numeric("delivery_free_radius_km_used", {
+    precision: 6,
+    scale: 2,
+  }),
+  pickupFreeRadiusKmUsed: numeric("pickup_free_radius_km_used", {
+    precision: 6,
+    scale: 2,
+  }),
+  deliveryRateCentsPerKmUsed: integer("delivery_rate_cents_per_km_used"),
+  pickupRateCentsPerKmUsed: integer("pickup_rate_cents_per_km_used"),
+  deliveryFeeCents: integer("delivery_fee_cents").notNull().default(0),
+  pickupFeeCents: integer("pickup_fee_cents").notNull().default(0),
+  // Admin manual override of the calculated delivery/pickup price, per the
+  // final amendment ("Admin must be able to manually override distance
+  // and/or price when necessary"). Null means no override was applied.
+  priceOverrideCents: integer("price_override_cents"),
+  priceOverrideReason: text("price_override_reason"),
+
+  // --- Final total ---
+  finalAmountCents: integer("final_amount_cents").notNull(),
+  currency: text("currency").notNull().default("CAD"),
+
+  // --- Payment ---
+  // "not_started" | "pending" | "paid" | "failed" | "partially_refunded" | "refunded"
+  paymentStatus: text("payment_status").notNull().default("not_started"),
+  stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  refundedAmountCents: integer("refunded_amount_cents").notNull().default(0),
+
+  // --- Agreement (Section 21) ---
+  agreementVersionId: uuid("agreement_version_id"),
+  agreementVersionLabel: text("agreement_version_label"),
+  agreementContentSnapshot: text("agreement_content_snapshot"),
+  agreementSignatureDataUrl: text("agreement_signature_data_url"),
+  agreementSignedAt: timestamp("agreement_signed_at", { withTimezone: true }),
+
+  // --- Manage My Booking secure access ---
+  manageTokenHash: text("manage_token_hash").unique(),
+
+  // --- Cancellation ---
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  cancellationReason: text("cancellation_reason"),
+  cancellationFeeCents: integer("cancellation_fee_cents"),
+
+  // --- Notes ---
+  internalNotes: text("internal_notes"),
+
+  // --- Completion (Section 20.40) ---
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Links a physical tote to the order it's currently (or was) assigned to.
+ * Rows are never deleted once the tote has actually been delivered, so
+ * historical rental counts/profit allocation (Section 18) always know
+ * exactly which physical units went out on a completed rental.
+ */
+export const orderToteAssignments = pgTable("order_tote_assignments", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  toteId: uuid("tote_id")
+    .notNull()
+    .references(() => totes.id),
+  assignedAt: timestamp("assigned_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+});
+
+/**
+ * Processed Stripe webhook event IDs, purely for idempotency: a
+ * payment_intent.succeeded (or any other) event is only ever acted on
+ * once, no matter how many times Stripe redelivers it.
+ */
+export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });

@@ -16,6 +16,9 @@ export type SettingsInitialValues = {
   distanceUnit: string;
   timezone: string;
   serviceArea: string;
+  serviceAreaProvinceCode: string;
+  businessOriginLat: number | string;
+  businessOriginLng: number | string;
   logoUrl: string;
   heroImageUrl: string;
   primaryColor: string;
@@ -37,6 +40,7 @@ export type SettingsInitialValues = {
   cancellationFeeAmount: string;
   cancellationFeePercentage: string;
   cancellationWindowHours: number;
+  cancellationCutoffReference: "start_of_day" | "end_of_day";
   lateFeePerToteDay: string;
   damagedToteFee: string;
   lostToteFee: string;
@@ -194,11 +198,11 @@ export function SettingsForm({
         </div>
       </Section>
 
-      <Section title="Service Area">
+      <Section title="Service Area & Routing">
         <Field
           label="Service area description"
           htmlFor="serviceArea"
-          hint='Shown to customers on the public site, e.g. "Central Alberta." The actual address eligibility check will be enforced separately once booking is built.'
+          hint='Shown to customers on the public site, e.g. "Central Alberta."'
         >
           <textarea
             id="serviceArea"
@@ -208,6 +212,53 @@ export function SettingsForm({
             className={inputClass}
           />
         </Field>
+
+        <Field
+          label="Service area province/region code"
+          htmlFor="serviceAreaProvinceCode"
+          error={errors.serviceAreaProvinceCode}
+          hint='The actual eligibility check: a two-letter code (e.g. "AB" for Alberta). An address outside this province is rejected at booking, before any routing or pricing is calculated.'
+        >
+          <input
+            id="serviceAreaProvinceCode"
+            name="serviceAreaProvinceCode"
+            defaultValue={initialValues.serviceAreaProvinceCode}
+            className={`${inputClass} max-w-[8rem] uppercase`}
+            maxLength={2}
+          />
+        </Field>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label="Business origin latitude (optional override)"
+            htmlFor="businessOriginLat"
+            error={errors.businessOriginLat}
+            hint="Auto-filled from Business address above when possible. Only set this manually if that pin is in the wrong place."
+          >
+            <input
+              id="businessOriginLat"
+              name="businessOriginLat"
+              type="number"
+              step="0.000001"
+              defaultValue={initialValues.businessOriginLat}
+              className={inputClass}
+            />
+          </Field>
+          <Field
+            label="Business origin longitude (optional override)"
+            htmlFor="businessOriginLng"
+            error={errors.businessOriginLng}
+          >
+            <input
+              id="businessOriginLng"
+              name="businessOriginLng"
+              type="number"
+              step="0.000001"
+              defaultValue={initialValues.businessOriginLng}
+              className={inputClass}
+            />
+          </Field>
+        </div>
       </Section>
 
       <Section title="Scheduling">
@@ -413,6 +464,22 @@ export function SettingsForm({
           Example: with the default of 24, cancelling more than 24 hours before delivery
           follows the fee settings above; cancelling within 24 hours gets no refund.
         </p>
+
+        <Field
+          label="Measure the cutoff from"
+          htmlFor="cancellationCutoffReference"
+          hint="Deliveries are day-based with no exact time, so this decides the exact moment the window above counts back from. Start of day is more protective of the business; end of day is more lenient to the customer."
+        >
+          <select
+            id="cancellationCutoffReference"
+            name="cancellationCutoffReference"
+            defaultValue={initialValues.cancellationCutoffReference}
+            className={inputClass}
+          >
+            <option value="start_of_day">Start of the delivery day (midnight)</option>
+            <option value="end_of_day">End of the delivery day (11:59 PM)</option>
+          </select>
+        </Field>
 
         <div className="grid gap-4 sm:grid-cols-3">
           <Field label="Late fee ($ per tote / day)" htmlFor="lateFeePerToteDay">

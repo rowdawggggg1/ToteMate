@@ -24,6 +24,9 @@ export default async function AdminSettingsPage() {
     distanceUnit: s?.distanceUnit ?? "km",
     timezone: s?.timezone ?? "America/Edmonton",
     serviceArea: s?.serviceArea ?? "",
+    serviceAreaProvinceCode: s?.serviceAreaProvinceCode ?? "AB",
+    businessOriginLat: s?.businessOriginLat ?? "",
+    businessOriginLng: s?.businessOriginLng ?? "",
     logoUrl: s?.logoUrl ?? "",
     heroImageUrl: s?.heroImageUrl ?? "",
     primaryColor: s?.primaryColor ?? "#2f5233",
@@ -47,6 +50,8 @@ export default async function AdminSettingsPage() {
       : "0.00",
     cancellationFeePercentage: s?.cancellationFeePercentage ?? "0.00",
     cancellationWindowHours: s?.cancellationWindowHours ?? 24,
+    cancellationCutoffReference:
+      (s?.cancellationCutoffReference as "start_of_day" | "end_of_day") ?? "start_of_day",
     lateFeePerToteDay: s ? centsToDollarsString(s.lateFeeCentsPerToteDay) : "0.00",
     damagedToteFee: s ? centsToDollarsString(s.damagedToteFeeCents) : "0.00",
     lostToteFee: s ? centsToDollarsString(s.lostToteFeeCents) : "0.00",

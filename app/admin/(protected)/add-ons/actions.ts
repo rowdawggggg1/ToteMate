@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { and, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
-import { addOns } from "@/lib/db/schema";
+import { addOns, orders } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth/admin";
 import { writeAudit } from "@/lib/audit";
 import { dollarsToCents } from "@/lib/money";
@@ -212,9 +212,38 @@ export async function deleteAddOnAction(addOnId: string): Promise<void> {
   const existing = rows[0];
   if (!existing) return;
 
-  // Safe to hard-delete for now -- no orders exist yet to reference an
-  // add-on. Once the booking phase adds orders, check for references first
-  // and deactivate instead of deleting if any exist.
+  // Orders snapshot an add-on's name/price at booking time, so a stale
+  // reference here can't corrupt an order's own record. This check still
+  // covers the one place an order keeps a live-ish reference (the weekly
+  // extension add-on id) -- deactivating instead of deleting when any
+  // order used this as its extension add-on, for a cleaner admin history.
+  // (Other add-ons an order purchased live only in that order's jsonb
+  // snapshot, which deleting this row can't affect.)
+  const referencingOrder = await db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(eq(orders.weeklyExtensionAddOnId, addOnId))
+    .limit(1);
+
+  if (referencingOrder.length > 0) {
+    await db
+      .update(addOns)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(addOns.id, addOnId));
+
+    await writeAudit({
+      actor: { type: "admin", id: admin.id, email: admin.email },
+      action: "ADDON_DEACTIVATED_INSTEAD_OF_DELETED",
+      entityType: "add_on",
+      entityId: addOnId,
+      notes: "Used as a weekly extension on an existing order -- deactivated rather than deleted.",
+    });
+
+    revalidatePath("/admin/add-ons");
+    revalidatePath("/");
+    return;
+  }
+
   await db.delete(addOns).where(eq(addOns.id, addOnId));
 
   await writeAudit({

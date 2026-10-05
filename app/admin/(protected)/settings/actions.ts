@@ -8,6 +8,7 @@ import { businessSettings } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth/admin";
 import { writeAudit } from "@/lib/audit";
 import { dollarsToCents } from "@/lib/money";
+import { geocodeAddress } from "@/lib/routing";
 
 /** Converts "" (or missing) to undefined before the number coercion runs,
  * so an empty optional field means "not set" rather than 0. */
@@ -21,6 +22,12 @@ const optionalNonNegDecimal = z.preprocess((val) => {
   if (val === "" || val === null || val === undefined) return undefined;
   return val;
 }, z.coerce.number().min(0).optional());
+
+/** Same "" -> undefined idea, for the optional manual lat/lng override. */
+const optionalLatLng = z.preprocess((val) => {
+  if (val === "" || val === null || val === undefined) return undefined;
+  return val;
+}, z.coerce.number().min(-180).max(180).optional());
 
 const hexColor = z
   .string()
@@ -42,6 +49,14 @@ const settingsSchema = z.object({
   distanceUnit: z.enum(["km", "mi"]),
   timezone: z.string().trim().min(1),
   serviceArea: z.string().trim().optional().default(""),
+  serviceAreaProvinceCode: z
+    .string()
+    .trim()
+    .min(2, "Enter a two-letter province/region code.")
+    .max(2, "Enter a two-letter province/region code.")
+    .transform((v) => v.toUpperCase()),
+  businessOriginLat: optionalLatLng,
+  businessOriginLng: optionalLatLng,
   logoUrl: z.string().trim().url("Enter a valid URL.").or(z.literal("")).default(""),
   heroImageUrl: z.string().trim().url("Enter a valid URL.").or(z.literal("")).default(""),
   primaryColor: hexColor,
@@ -67,6 +82,7 @@ const settingsSchema = z.object({
   cancellationFeeAmount: z.coerce.number().min(0),
   cancellationFeePercentage: z.coerce.number().min(0).max(100),
   cancellationWindowHours: z.coerce.number().int().min(0),
+  cancellationCutoffReference: z.enum(["start_of_day", "end_of_day"]),
 
   lateFeePerToteDay: z.coerce.number().min(0),
   damagedToteFee: z.coerce.number().min(0),
@@ -99,6 +115,9 @@ export async function updateSettingsAction(
     distanceUnit: formData.get("distanceUnit"),
     timezone: formData.get("timezone"),
     serviceArea: formData.get("serviceArea"),
+    serviceAreaProvinceCode: formData.get("serviceAreaProvinceCode"),
+    businessOriginLat: formData.get("businessOriginLat"),
+    businessOriginLng: formData.get("businessOriginLng"),
     logoUrl: formData.get("logoUrl"),
     heroImageUrl: formData.get("heroImageUrl"),
     primaryColor: formData.get("primaryColor"),
@@ -120,6 +139,7 @@ export async function updateSettingsAction(
     cancellationFeeAmount: formData.get("cancellationFeeAmount"),
     cancellationFeePercentage: formData.get("cancellationFeePercentage"),
     cancellationWindowHours: formData.get("cancellationWindowHours"),
+    cancellationCutoffReference: formData.get("cancellationCutoffReference"),
     lateFeePerToteDay: formData.get("lateFeePerToteDay"),
     damagedToteFee: formData.get("damagedToteFee"),
     lostToteFee: formData.get("lostToteFee"),
@@ -147,6 +167,29 @@ export async function updateSettingsAction(
     .limit(1);
   const existing = existingRows[0] ?? null;
 
+  // Resolve the routing origin: a manual override always wins; otherwise,
+  // if the business address changed, best-effort re-geocode it. A failure
+  // here (no API key configured yet, address not found, network issue)
+  // never blocks saving the rest of the settings -- it just leaves the
+  // previous coordinates in place, and routing/pricing will surface a
+  // clear error later if an origin is still missing when it's actually
+  // needed.
+  let resolvedOriginLat = existing?.businessOriginLat ?? null;
+  let resolvedOriginLng = existing?.businessOriginLng ?? null;
+
+  if (data.businessOriginLat !== undefined && data.businessOriginLng !== undefined) {
+    resolvedOriginLat = data.businessOriginLat.toFixed(6);
+    resolvedOriginLng = data.businessOriginLng.toFixed(6);
+  } else if (data.businessAddress && data.businessAddress !== existing?.businessAddress) {
+    try {
+      const geocode = await geocodeAddress(data.businessAddress);
+      resolvedOriginLat = geocode.lat.toFixed(6);
+      resolvedOriginLng = geocode.lng.toFixed(6);
+    } catch {
+      // See comment above -- best effort only.
+    }
+  }
+
   const nextValues = {
     businessName: data.businessName,
     tagline: data.tagline || null,
@@ -157,6 +200,9 @@ export async function updateSettingsAction(
     distanceUnit: data.distanceUnit,
     timezone: data.timezone,
     serviceArea: data.serviceArea || null,
+    serviceAreaProvinceCode: data.serviceAreaProvinceCode,
+    businessOriginLat: resolvedOriginLat,
+    businessOriginLng: resolvedOriginLng,
     logoUrl: data.logoUrl || null,
     heroImageUrl: data.heroImageUrl || null,
     primaryColor: data.primaryColor,
@@ -179,6 +225,7 @@ export async function updateSettingsAction(
     cancellationFeeAmountCents: dollarsToCents(data.cancellationFeeAmount),
     cancellationFeePercentage: data.cancellationFeePercentage.toFixed(2),
     cancellationWindowHours: data.cancellationWindowHours,
+    cancellationCutoffReference: data.cancellationCutoffReference,
     lateFeeCentsPerToteDay: dollarsToCents(data.lateFeePerToteDay),
     damagedToteFeeCents: dollarsToCents(data.damagedToteFee),
     lostToteFeeCents: dollarsToCents(data.lostToteFee),

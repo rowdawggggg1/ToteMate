@@ -7,9 +7,13 @@ import { logoutAction } from "@/lib/auth/actions";
 
 const NAV_ITEMS = [
   { href: "/admin", label: "Dashboard" },
+  { href: "/admin/orders", label: "Orders" },
   { href: "/admin/packages", label: "Packages" },
   { href: "/admin/add-ons", label: "Add-Ons" },
   { href: "/admin/faqs", label: "FAQs" },
+  { href: "/admin/inventory", label: "Inventory" },
+  { href: "/admin/agreements", label: "Agreements" },
+  { href: "/admin/blocked-dates", label: "Blocked Dates" },
   { href: "/admin/settings", label: "Settings" },
 ];
 
