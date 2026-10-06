@@ -8,15 +8,7 @@ import { getDb } from "@/lib/db";
 import { totes } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth/admin";
 import { writeAudit } from "@/lib/audit";
-
-export const TOTE_STATUSES = [
-  "ready",
-  "with_customer",
-  "needs_cleaning",
-  "damaged",
-  "lost",
-  "retired",
-] as const;
+import { TOTE_STATUSES } from "./tote-statuses";
 
 export type ToteActionState = {
   error?: string;

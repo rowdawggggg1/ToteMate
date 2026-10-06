@@ -3,7 +3,8 @@
 import { useActionState } from "react";
 import { Field, inputClass } from "@/components/ui/field";
 import { SubmitButton } from "@/components/ui/submit-button";
-import { updateToteAction, TOTE_STATUSES, type ToteActionState } from "./actions";
+import { updateToteAction, type ToteActionState } from "./actions";
+import { TOTE_STATUSES } from "./tote-statuses";
 
 const STATUS_LABELS: Record<(typeof TOTE_STATUSES)[number], string> = {
   ready: "Ready",

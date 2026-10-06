@@ -6,7 +6,7 @@ import { totes } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
 import { EditToteForm } from "../edit-tote-form";
 import { ReplaceToteForm } from "../replace-tote-form";
-import type { TOTE_STATUSES } from "../actions";
+import type { TOTE_STATUSES } from "../tote-statuses";
 
 export const dynamic = "force-dynamic";
 

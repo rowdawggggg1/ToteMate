@@ -303,10 +303,24 @@ export async function createBookingOrderAndPaymentIntent(
   const manageTokenHash = hashManageToken(manageToken);
 
   const stripe = getStripe();
+
+  // A Stripe Customer + setup_future_usage: "off_session" saves this card
+  // for later, so an admin can charge a late fee on-demand afterward
+  // (Phase 4) without the customer re-entering their card. This only
+  // *saves* the method -- nothing is ever charged again without a
+  // separate, explicit admin action later.
+  const stripeCustomer = await stripe.customers.create({
+    name: input.customerName,
+    email: input.customerEmail,
+    phone: input.customerPhone,
+  });
+
   const paymentIntent = await stripe.paymentIntents.create({
     amount: finalAmountCents,
     currency: settings.currency.toLowerCase(),
+    customer: stripeCustomer.id,
     automatic_payment_methods: { enabled: true },
+    setup_future_usage: "off_session",
     metadata: { orderNumber: "" }, // filled in once we know the order id, below
   });
 

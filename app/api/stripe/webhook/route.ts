@@ -53,7 +53,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   if (event.type === "payment_intent.succeeded") {
-    const paymentIntent = event.data.object as { id: string; amount_received: number };
+    const paymentIntent = event.data.object as {
+      id: string;
+      amount_received: number;
+      customer: string | null;
+      payment_method: string | null;
+    };
     await handlePaymentSucceeded(paymentIntent);
   } else if (event.type === "payment_intent.payment_failed") {
     const paymentIntent = event.data.object as { id: string };
@@ -66,6 +71,8 @@ export async function POST(request: Request): Promise<NextResponse> {
 async function handlePaymentSucceeded(paymentIntent: {
   id: string;
   amount_received: number;
+  customer: string | null;
+  payment_method: string | null;
 }): Promise<void> {
   const db = getDb();
   const rows = await db
@@ -94,6 +101,12 @@ async function handlePaymentSucceeded(paymentIntent: {
       status: "scheduled",
       paymentStatus: "paid",
       paidAt: new Date(),
+      // Saved here (not at order creation) because this is the moment
+      // Stripe confirms the card was actually usable off-session -- see
+      // lib/orders.ts's setup_future_usage: "off_session" on the original
+      // PaymentIntent. Used later for on-demand late-fee charges.
+      stripeCustomerId: paymentIntent.customer ?? null,
+      stripePaymentMethodId: paymentIntent.payment_method ?? null,
       updatedAt: new Date(),
     })
     .where(eq(orders.id, order.id));

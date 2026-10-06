@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { asc, eq, isNull, and } from "drizzle-orm";
+import { asc, desc, eq, isNull, and } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { orderToteAssignments, orders, totes } from "@/lib/db/schema";
+import { orderLateFees, orderToteAssignments, orders, totes } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
 import { OrderDetailClient } from "../order-detail-client";
 import { PriceOverrideForm } from "../price-override-form";
+import { LateFeesSection } from "../late-fees-section";
 import { updateOrderNotesAction } from "../actions";
 import { Field, inputClass } from "@/components/ui/field";
 import { SubmitButton } from "@/components/ui/submit-button";
@@ -41,6 +42,12 @@ export default async function OrderDetailPage({
     .from(totes)
     .where(eq(totes.status, "ready"))
     .orderBy(asc(totes.number));
+
+  const lateFeeRows = await db
+    .select()
+    .from(orderLateFees)
+    .where(eq(orderLateFees.orderId, order.id))
+    .orderBy(desc(orderLateFees.createdAt));
 
   const addOns = Array.isArray(order.addOns)
     ? (order.addOns as Array<{ name: string; priceCents: number; quantity: number }>)
@@ -150,6 +157,22 @@ export default async function OrderDetailPage({
             order.priceOverrideCents !== null ? centsToDollarsString(order.priceOverrideCents) : ""
           }
           currentReason={order.priceOverrideReason ?? ""}
+        />
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">Late fees</h2>
+        <LateFeesSection
+          orderId={order.id}
+          fees={lateFeeRows.map((f) => ({
+            id: f.id,
+            amountCents: f.amountCents,
+            reason: f.reason,
+            status: f.status,
+            chargeFailureMessage: f.chargeFailureMessage,
+            createdAt: f.createdAt.toISOString(),
+          }))}
+          hasCardOnFile={Boolean(order.stripeCustomerId && order.stripePaymentMethodId)}
         />
       </section>
 

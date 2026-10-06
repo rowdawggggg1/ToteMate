@@ -156,10 +156,10 @@ The real booking flow, end to end:
 
 **Scope notes / deferred to a later phase:** referral codes, gift cards,
 and the Realtor program (no such entities exist yet, so the booking flow
-has no "codes" step); automatic late fees (late fees stay strictly
-manual, per the spec); driver accounts and an admin calendar view;
-financial reporting; reviews. None of these block using the app for real
-bookings today.
+has no "codes" step); financial reporting; reviews. (Driver accounts, an
+admin calendar, and manual late fees were originally listed here too --
+all three shipped in Phase 4, below.) None of these block using the app
+for real bookings today.
 
 Database-wise, this phase adds six new tables (`totes`,
 `rental_agreement_versions`, `blocked_dates`, `orders`,
@@ -183,6 +183,64 @@ agreement version in Admin -> Agreements; add some physical totes in
 Admin -> Inventory. The `/book` page shows a plain "booking isn't quite
 ready yet" message instead of the wizard until there's an active
 package and an active agreement version.
+
+## Phase 4 (this delivery): operations
+
+Running the business day-to-day, on top of Phase 3's booking engine:
+
+* **Driver accounts** (`/driver`, managed from `/admin/drivers`): drivers
+  are staff accounts (`admins` rows with `role: "driver"`) an owner
+  creates individually, but every driver who signs in sees the *same*
+  shared job list -- every scheduled delivery and every pickup due, for
+  every driver -- rather than a per-driver assignment. A driver can mark
+  a job "Delivered" or "Picked Up" from there; those are the exact same
+  actions the full admin Orders page uses, just also reachable by a
+  driver account. A driver account cannot reach `/admin` at all --
+  `requireAdmin()` (used by every admin page/action) now only lets
+  `role: "owner"` through; `requireStaff()` is the separate, narrower
+  check that allows either role, used only where a driver legitimately
+  needs it.
+* **Admin calendar** (`/admin/calendar`): a month view of every scheduled
+  delivery and pickup plus blocked dates. Dragging a *delivery* onto a
+  new day reschedules that order (delivery and pickup move together,
+  re-running the exact same availability checks as the customer's own
+  Manage My Booking reschedule -- `lib/reschedule.ts` is now the one
+  shared implementation both use). Pickup chips and blocked dates are
+  shown for reference but aren't draggable: moving a pickup date on its
+  own (for an order that's already out with the customer) is a
+  rental-extension decision, not a simple date move, and isn't something
+  this phase invents a pricing rule for.
+* **Late fees** (on each order's detail page): an admin can record a late
+  fee at any time -- it's saved and shown on the order immediately,
+  regardless of whether it's ever charged. Separately, if the order has a
+  card on file, an admin can click "Charge Card on File" whenever *they*
+  decide to -- it is never automatic. The card is captured the moment the
+  original booking payment succeeds (the booking PaymentIntent is created
+  with `setup_future_usage: "off_session"` specifically for this), so a
+  late fee charged weeks later doesn't need the customer to do anything.
+  If there's no card on file (orders booked before this feature existed)
+  or a charge attempt fails (declined, expired card, etc.), the fee
+  simply stays recorded as owed -- collecting it another way is always
+  the fallback, never an error state the admin has to work around.
+
+**Scope notes / deferred to Phase 5:** referral codes, gift cards, the
+Realtor program, financial reporting, and reviews -- these are
+revenue/marketing features, not day-to-day operations, so they're held
+for Phase 5 (Money + Growth + Polish) per an explicit scoping decision
+made with the business owner rather than assumed.
+
+Database-wise, this phase adds one new table (`order_late_fees`) and two
+new columns on `orders` (`stripe_customer_id`, `stripe_payment_method_id`).
+No new `admins` columns were needed -- the `role` column already existed
+from Phase 1 for exactly this purpose. Run `npm run db:push` after
+updating -- additive only, nothing dropped.
+
+No new environment variables for this phase.
+
+**Before late-fee charging works for a given order**, that order has to
+have been booked *after* this phase was deployed -- only then does the
+booking flow save a card on file. Orders from before this phase can still
+have late fees recorded, just not charged through the app.
 
 ## Tech stack
 
@@ -284,9 +342,14 @@ app/
   realtors/                       Realtor portal placeholder (real one: later phase)
   setup/                          First-run admin creation
   api/stripe/webhook/route.ts     Stripe webhook (idempotent order finalization)
+  driver/                         Driver portal (role: "driver" staff accounts)
+    login/                        Driver login (separate front door, shared table)
+    layout.tsx                    requireStaff() gate + simple header
+    page.tsx                      Shared job list (every delivery/pickup due)
+    driver-jobs-client.tsx        Mark Delivered/Picked Up (reuses admin actions)
   admin/
     login/                        Admin login (outside the auth gate)
-    (protected)/                  Everything behind requireAdmin()
+    (protected)/                  Everything behind requireAdmin() (owner-only)
       layout.tsx                  Renders the admin shell
       page.tsx                    Dashboard placeholder
       packages/                   Package management (list/new/[id])
@@ -295,11 +358,20 @@ app/
       inventory/                  Physical tote records + replace workflow
       agreements/                 Rental agreement versions (draft/publish)
       blocked-dates/              Owner-blocked delivery/pickup dates
-      orders/                     Order list/detail, status, tote assignment
+      calendar/                   Month view, drag-to-reschedule deliveries
+      drivers/                    Create/edit driver accounts (list/new/[id])
+      orders/                     Order list/detail, status, tote assignment,
+                                   late fees (record + on-demand Stripe charge)
       settings/                   Business Settings
 lib/
   db/                             Drizzle schema + lazy DB client
-  auth/                           Password hashing, sessions, requireAdmin
+  auth/                           Password hashing, sessions, login.ts
+                                  (shared by /admin and /driver login),
+                                  requireAdmin (owner-only) vs requireStaff
+                                  (owner or driver)
+  reschedule.ts                   Shared "move this order's delivery date"
+                                  logic -- used by Manage My Booking AND
+                                  the admin calendar's drag-and-drop
   catalog.ts                      Shared getActivePackages/getActiveFaqs/
                                   getActiveAddOnsForPackage -- the one
                                   place that defines "publicly bookable"

@@ -17,14 +17,21 @@ export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const isAdminRoute = pathname.startsWith("/admin");
-  const isLoginRoute = pathname === "/admin/login";
+  const isDriverRoute = pathname.startsWith("/driver");
+  const isLoginRoute = pathname === "/admin/login" || pathname === "/driver/login";
 
-  if (isAdminRoute && !isLoginRoute) {
+  if ((isAdminRoute || isDriverRoute) && !isLoginRoute) {
     const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
     if (!sessionToken) {
-      const loginUrl = new URL("/admin/login", request.url);
-      loginUrl.searchParams.set("next", pathname);
+      // Drivers and admins share one login cookie/table (see lib/db/
+      // schema.ts's admins table), but each has its own front door --
+      // bounce back to whichever one this route belongs to.
+      const loginPath = isDriverRoute ? "/driver/login" : "/admin/login";
+      const loginUrl = new URL(loginPath, request.url);
+      if (!isDriverRoute) {
+        loginUrl.searchParams.set("next", pathname);
+      }
       return NextResponse.redirect(loginUrl);
     }
   }
@@ -33,5 +40,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*"],
+  matcher: ["/admin/:path*", "/driver/:path*"],
 };

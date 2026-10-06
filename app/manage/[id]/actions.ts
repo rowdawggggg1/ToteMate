@@ -5,14 +5,8 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { orders } from "@/lib/db/schema";
 import { hashManageToken } from "@/lib/manage-token";
-import {
-  checkDeliveryDateAvailability,
-  checkDailyCapacity,
-  checkToteAvailability,
-  addWeeksToDateString,
-  isWithinCancellationWindow,
-  getBusinessSettings,
-} from "@/lib/availability";
+import { isWithinCancellationWindow, getBusinessSettings } from "@/lib/availability";
+import { rescheduleOrderDeliveryDate } from "@/lib/reschedule";
 import { calculateCancellationFeeCents } from "@/lib/pricing";
 import { getStripe } from "@/lib/stripe";
 import { sendCancellationEmail, sendRescheduleEmail } from "@/lib/email";
@@ -131,47 +125,11 @@ export async function rescheduleBookingAction(
     return { ok: false, error: "This booking can no longer be rescheduled here." };
   }
 
-  const settings = await getBusinessSettings();
-
-  const dateCheck = await checkDeliveryDateAvailability(newDeliveryDate, {
-    minLeadTimeDays: settings.minLeadTimeDays,
-    timezone: settings.timezone,
-  });
-  if (!dateCheck.ok) {
-    return { ok: false, error: dateCheck.reason ?? "That date isn't available." };
+  const rescheduleResult = await rescheduleOrderDeliveryDate(order, newDeliveryDate);
+  if (!rescheduleResult.ok) {
+    return { ok: false, error: rescheduleResult.error };
   }
-
-  const newPickupDate = addWeeksToDateString(
-    newDeliveryDate,
-    order.rentalDurationWeeks + order.extensionWeeks
-  );
-
-  const pickupCapacity = await checkDailyCapacity(newPickupDate, { excludeOrderId: order.id });
-  if (!pickupCapacity.withinCapacity) {
-    return { ok: false, error: "That pickup date is fully booked. Please choose another date." };
-  }
-
-  const toteAvailability = await checkToteAvailability(
-    newDeliveryDate,
-    newPickupDate,
-    order.packageToteQuantity,
-    { excludeOrderId: order.id }
-  );
-  if (!toteAvailability.available) {
-    return { ok: false, error: "We don't have enough totes available for those dates." };
-  }
-
-  const db = getDb();
-  await db
-    .update(orders)
-    .set({
-      requestedDeliveryDate: newDeliveryDate,
-      confirmedDeliveryDate: newDeliveryDate,
-      requestedPickupDate: newPickupDate,
-      confirmedPickupDate: newPickupDate,
-      updatedAt: new Date(),
-    })
-    .where(eq(orders.id, order.id));
+  const newPickupDate = rescheduleResult.newPickupDate;
 
   await writeAudit({
     actor: { type: "system" },

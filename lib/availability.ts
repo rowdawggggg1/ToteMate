@@ -41,8 +41,16 @@ export async function getBusinessSettings(): Promise<BusinessSettingsRow> {
 
 /** Order statuses that no longer hold a capacity/inventory slot. Every
  * other status (including "completed") still occupied its window
- * historically, which only matters for dates in the past. */
-const RELEASED_ORDER_STATUSES = ["draft", "payment_failed", "cancelled", "refunded"]
+ * historically, which only matters for dates in the past.
+ *
+ * Deliberately typed as a plain `string[]`, not `as const` (which would
+ * make it a readonly string-literal tuple). `orders.status` is a plain
+ * Drizzle `text()` column, so its values are typed as `string`, and
+ * Drizzle's `notInArray()`/`inArray()` overloads expect a regular
+ * `string[]` to match -- a readonly literal tuple doesn't satisfy that
+ * overload and fails the production type-check (this broke the Phase 3
+ * build once already; keep it a plain string[] here). */
+const RELEASED_ORDER_STATUSES: string[] = ["draft", "payment_failed", "cancelled", "refunded"];
 
 // --- Date helpers (plain YYYY-MM-DD strings, UTC-anchored so day math
 // never drifts across a DST boundary) --------------------------------

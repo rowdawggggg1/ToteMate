@@ -26,7 +26,16 @@ export function SiteHeader({
         <Link href="/" className="flex items-center gap-2 font-serif text-xl font-semibold text-[var(--color-text)]">
           {logoUrl ? (
             // eslint-disable-next-line @next/next/no-img-element -- admin-provided external URL, not a known static asset
-            <img src={logoUrl} alt={businessName} className="h-9 w-auto object-contain" />
+            // Logo image is assumed to be a full lockup (icon + business name
+            // already baked into the artwork), so it's shown alone -- no
+            // separate text duplicating the name beside it. Sized taller
+            // than the old 36px so a lockup with a wordmark + tagline stays
+            // legible, while still fitting the header on mobile.
+            <img
+              src={logoUrl}
+              alt={businessName}
+              className="h-12 w-auto max-w-[220px] object-contain sm:h-14 sm:max-w-none"
+            />
           ) : (
             businessName
           )}

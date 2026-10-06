@@ -92,6 +92,26 @@ export async function sendCancellationEmail(order: OrderRow): Promise<void> {
   await send(order.customerEmail, subject, text);
 }
 
+export async function sendLateFeeChargedEmail(
+  order: OrderRow,
+  amountCents: number,
+  reason: string | null
+): Promise<void> {
+  const subject = `Late fee charged -- order ${order.orderNumber}`;
+  const text = [
+    `Hi ${order.customerName},`,
+    "",
+    `A late fee of $${centsToDollarsString(amountCents)} was charged to the card on file for order ${order.orderNumber}.`,
+    reason ? `Reason: ${reason}` : "",
+    "",
+    "If you have any questions, just reply to this email.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  await send(order.customerEmail, subject, text);
+}
+
 export async function sendRescheduleEmail(order: OrderRow): Promise<void> {
   const subject = `Booking updated -- order ${order.orderNumber}`;
   const text = [

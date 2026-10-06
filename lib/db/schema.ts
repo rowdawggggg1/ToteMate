@@ -12,10 +12,13 @@ import {
 } from "drizzle-orm/pg-core";
 
 /**
- * Admin users. The initial account is created through /setup.
- * Future phases may add a "driver" role that shares this table with a
- * restricted set of permitted actions, per the locked spec (Section 12 of
- * the final amendment): Admin (owner) and Driver (view-only operational).
+ * Staff accounts: both the business owner/admin and drivers live in this
+ * one table, distinguished by `role`, per the locked spec (Section 12 of
+ * the final amendment): "owner" (full admin access) or "driver" (shares
+ * this table/session/login machinery, but is restricted to the /driver
+ * job list -- see lib/auth/admin.ts's requireAdmin() vs requireStaff()).
+ * The initial "owner" account is created through /setup; driver accounts
+ * are created by an owner from Admin -> Drivers.
  */
 export const admins = pgTable("admins", {
   id: uuid("id")
@@ -467,6 +470,16 @@ export const orders = pgTable("orders", {
   stripePaymentIntentId: text("stripe_payment_intent_id").unique(),
   paidAt: timestamp("paid_at", { withTimezone: true }),
   refundedAmountCents: integer("refunded_amount_cents").notNull().default(0),
+  // --- Phase 4: card on file, for on-demand late-fee charging ---
+  // Captured from the booking PaymentIntent once it succeeds (see the
+  // Stripe webhook). The original PaymentIntent is created with
+  // setup_future_usage: "off_session" specifically so this payment method
+  // stays chargeable later without the customer re-entering card details.
+  // Null for any order whose card wasn't saved (declined off-session use,
+  // or booked before this feature existed) -- late fees on those orders
+  // can still be recorded, just not charged through the app.
+  stripeCustomerId: text("stripe_customer_id"),
+  stripePaymentMethodId: text("stripe_payment_method_id"),
 
   // --- Agreement (Section 21) ---
   agreementVersionId: uuid("agreement_version_id"),
@@ -517,6 +530,43 @@ export const orderToteAssignments = pgTable("order_tote_assignments", {
     .notNull()
     .defaultNow(),
   releasedAt: timestamp("released_at", { withTimezone: true }),
+});
+
+/**
+ * Late fees applied to an order (Section 20 / final amendment: automatic
+ * late fees stay a manual admin action, not an auto-charge). A row here is
+ * ALWAYS created the moment an admin applies a fee -- it's recorded and
+ * visible on the order immediately, regardless of whether it ever gets
+ * charged. Charging it through Stripe (using the card on file captured at
+ * booking) is a separate, explicit admin action the owner triggers
+ * whenever they choose; it is never automatic. "status" tracks that
+ * separately from the fee's existence: "recorded" (not yet charged --
+ * the default, and the end state if the owner collects it another way),
+ * "charged" (the saved card was successfully charged), or "charge_failed"
+ * (an attempt was made but the card was declined/unusable -- still owed,
+ * admin can retry or collect manually).
+ */
+export const orderLateFees = pgTable("order_late_fees", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  amountCents: integer("amount_cents").notNull(),
+  reason: text("reason"),
+  // "recorded" | "charged" | "charge_failed"
+  status: text("status").notNull().default("recorded"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  chargeFailureMessage: text("charge_failure_message"),
+  chargedAt: timestamp("charged_at", { withTimezone: true }),
+  createdByAdminId: uuid("created_by_admin_id").references(() => admins.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 /**
