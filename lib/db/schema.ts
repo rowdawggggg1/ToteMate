@@ -12,13 +12,15 @@ import {
 } from "drizzle-orm/pg-core";
 
 /**
- * Staff accounts: both the business owner/admin and drivers live in this
- * one table, distinguished by `role`, per the locked spec (Section 12 of
- * the final amendment): "owner" (full admin access) or "driver" (shares
- * this table/session/login machinery, but is restricted to the /driver
- * job list -- see lib/auth/admin.ts's requireAdmin() vs requireStaff()).
- * The initial "owner" account is created through /setup; driver accounts
- * are created by an owner from Admin -> Drivers.
+ * Staff/partner accounts: the business owner/admin, drivers, AND (Phase 5)
+ * realtors all live in this one table, distinguished by `role`: "owner"
+ * (full admin access), "driver" (shares this table/session/login
+ * machinery, but is restricted to the /driver job list -- see
+ * lib/auth/admin.ts's requireAdmin() vs requireStaff()), or "realtor"
+ * (restricted to the /realtor portal -- see requireRealtor() below). The
+ * initial "owner" account is created through /setup; driver accounts are
+ * created by an owner from Admin -> Drivers; realtor accounts from
+ * Admin -> Realtors.
  */
 export const admins = pgTable("admins", {
   id: uuid("id")
@@ -186,6 +188,50 @@ export const businessSettings = pgTable("business_settings", {
   lostToteFeeCents: integer("lost_tote_fee_cents").notNull().default(0),
 
   bookingPaused: boolean("booking_paused").notNull().default(false),
+
+  // --- Phase 5: referral program settings ---
+  // The referrer (code owner) reward is NOT a toggle -- per the locked
+  // decision, using someone's code always owes that person a reward (type
+  // + value configured here). "fixed" | "percentage"; percentage is of
+  // the referee's order finalAmountCents before the referee discount is
+  // subtracted.
+  referralReferrerRewardType: text("referral_referrer_reward_type")
+    .notNull()
+    .default("fixed"),
+  referralReferrerRewardValueCents: integer("referral_referrer_reward_value_cents")
+    .notNull()
+    .default(0),
+  referralReferrerRewardPercentage: numeric("referral_referrer_reward_percentage", {
+    precision: 5,
+    scale: 2,
+  })
+    .notNull()
+    .default("0"),
+  // The referee (new customer) discount IS separately toggleable, per the
+  // locked decision -- owner may run the program with no customer-facing
+  // discount at all, just a thank-you reward to the referrer.
+  referralRefereeDiscountEnabled: boolean("referral_referee_discount_enabled")
+    .notNull()
+    .default(false),
+  referralRefereeDiscountType: text("referral_referee_discount_type")
+    .notNull()
+    .default("fixed"),
+  referralRefereeDiscountValueCents: integer("referral_referee_discount_value_cents")
+    .notNull()
+    .default(0),
+  referralRefereeDiscountPercentage: numeric("referral_referee_discount_percentage", {
+    precision: 5,
+    scale: 2,
+  })
+    .notNull()
+    .default("0"),
+  // Realtors start earning NOTHING from their own referral code (they
+  // already profit via subscriptions/gift-card resale) -- this toggle
+  // exists so the owner can turn on the same referrer reward for realtors
+  // later without a code change. Defaults off per the locked decision.
+  referralRealtorsEarnReferrerReward: boolean("referral_realtors_earn_referrer_reward")
+    .notNull()
+    .default(false),
 
   // Doubles as the first-run setup mutex: NULL until the initial admin
   // account has been successfully created (see app/setup/actions.ts).
@@ -460,6 +506,23 @@ export const orders = pgTable("orders", {
   priceOverrideCents: integer("price_override_cents"),
   priceOverrideReason: text("price_override_reason"),
 
+  // --- Phase 5: referral code + gift card applied at checkout (at most
+  // one of each per order, per the practical scope decision -- an admin
+  // can always apply further adjustments manually via the price override
+  // above). These are snapshots of the discount actually given, frozen at
+  // checkout time like everything else on this row.
+  referralCodeId: uuid("referral_code_id"),
+  referralDiscountCents: integer("referral_discount_cents").notNull().default(0),
+  // What's owed to the code's OWNER (not the customer on this order) once
+  // payment succeeds -- frozen here at booking time since settings could
+  // change before the webhook fires. See referralRedemptions for the
+  // actual payout record this becomes.
+  referralRewardOwedCents: integer("referral_reward_owed_cents").notNull().default(0),
+  giftCardId: uuid("gift_card_id"),
+  giftCardAmountAppliedCents: integer("gift_card_amount_applied_cents")
+    .notNull()
+    .default(0),
+
   // --- Final total ---
   finalAmountCents: integer("final_amount_cents").notNull(),
   currency: text("currency").notNull().default("CAD"),
@@ -578,6 +641,213 @@ export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
   id: text("id").primaryKey(),
   type: text("type").notNull(),
   processedAt: timestamp("processed_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// =====================================================================
+// Phase 5: Referrals, Gift Cards, Realtor Program, Financial Reporting
+// =====================================================================
+
+/**
+ * A referral code belongs to exactly one owner: a past customer
+ * (customerEmail set) or a realtor (realtorId set, FK into admins).
+ * Customer codes are generated lazily the first time they're needed (see
+ * lib/referrals.ts) rather than up front for every order, since most
+ * customers will never look at theirs.
+ */
+export const referralCodes = pgTable("referral_codes", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  code: text("code").notNull().unique(),
+  // "customer" | "realtor"
+  ownerType: text("owner_type").notNull(),
+  customerEmail: text("customer_email"),
+  realtorId: uuid("realtor_id").references(() => admins.id),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * One row per order that used a referral code. Both halves of the locked
+ * decision are recorded on the same row even though only one may be
+ * nonzero: `refereeDiscountCents` (what the new customer saved, only
+ * nonzero when the referee-discount toggle was on at redemption time) and
+ * `referrerRewardCents` (what's owed to the code's owner -- always
+ * computed, since the referrer reward isn't toggleable). The referrer is
+ * paid out manually (e-transfer, cash, etc.), never automatically by this
+ * app, so `payoutStatus`/`paidAt` just track that it happened.
+ */
+export const referralRedemptions = pgTable("referral_redemptions", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  referralCodeId: uuid("referral_code_id")
+    .notNull()
+    .references(() => referralCodes.id),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" })
+    .unique(),
+  refereeDiscountCents: integer("referee_discount_cents").notNull().default(0),
+  referrerRewardCents: integer("referrer_reward_cents").notNull().default(0),
+  // "owed" | "paid"
+  payoutStatus: text("payout_status").notNull().default("owed"),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Admin-configurable list of purchasable gift card amounts (the locked
+ * "fixed preset denominations" decision), so the set of amounts a
+ * customer/realtor can buy is never hardcoded.
+ */
+export const giftCardDenominations = pgTable("gift_card_denominations", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  amountCents: integer("amount_cents").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * A gift card's running balance. `sourceType` is what drives the one
+ * stacking rule the owner cares about (Section: discount stacking
+ * decision): "admin_issued" (free, issued by the owner) and "purchased"
+ * (paid in full by a customer or a realtor buying ad-hoc) can both be
+ * combined with a referral code at redemption; "realtor_subscription"
+ * (delivered to a realtor at a discounted recurring price) cannot, since
+ * that would stack two discounts on the same order. See
+ * lib/referrals.ts / lib/giftcards.ts for where that rule is enforced.
+ */
+export const giftCards = pgTable("gift_cards", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  code: text("code").notNull().unique(),
+  initialValueCents: integer("initial_value_cents").notNull(),
+  balanceCents: integer("balance_cents").notNull(),
+  // "active" | "depleted" | "disabled"
+  status: text("status").notNull().default("active"),
+  // "admin_issued" | "purchased" | "realtor_subscription"
+  sourceType: text("source_type").notNull(),
+  purchasedByName: text("purchased_by_name"),
+  purchasedByEmail: text("purchased_by_email"),
+  // Optional: who the card is actually intended for, so it can be emailed
+  // straight to a gift recipient rather than the purchaser.
+  recipientEmail: text("recipient_email"),
+  recipientName: text("recipient_name"),
+  // Set only for sourceType = "realtor_subscription": which realtor this
+  // cycle's card was issued to, for their own dashboard + reporting.
+  issuedToRealtorId: uuid("issued_to_realtor_id").references(() => admins.id),
+  realtorSubscriptionId: uuid("realtor_subscription_id"),
+  stripeCheckoutSessionId: text("stripe_checkout_session_id"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  createdByAdminId: uuid("created_by_admin_id").references(() => admins.id),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * One row per order a gift card balance was applied to. A gift card can
+ * be used across several orders over time (its balance just goes down),
+ * but -- the practical scope decision -- an order can only have ONE gift
+ * card applied to it at checkout.
+ */
+export const giftCardRedemptions = pgTable("gift_card_redemptions", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  giftCardId: uuid("gift_card_id")
+    .notNull()
+    .references(() => giftCards.id),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" })
+    .unique(),
+  amountAppliedCents: integer("amount_applied_cents").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Admin-defined realtor subscription tiers (the locked "admin-defined
+ * multiple plan tiers" decision): each tier is its own Stripe Product +
+ * recurring Price, created/updated through the Stripe API when an admin
+ * saves the tier here, so nothing about price or cadence is hardcoded.
+ * Deactivating a tier (isActive = false) hides it from the realtor portal
+ * without touching realtors already subscribed to it.
+ */
+export const realtorSubscriptionTiers = pgTable("realtor_subscription_tiers", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  description: text("description"),
+  // "month" | "year"
+  cadenceInterval: text("cadence_interval").notNull().default("month"),
+  // How large a gift card this tier delivers each successful billing
+  // cycle, and what the realtor is actually charged for it (the
+  // discounted recurring price -- not the card's face value).
+  giftCardValueCents: integer("gift_card_value_cents").notNull(),
+  priceCents: integer("price_cents").notNull(),
+  stripeProductId: text("stripe_product_id"),
+  stripePriceId: text("stripe_price_id"),
+  isActive: boolean("is_active").notNull().default(false),
+  displayOrder: integer("display_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * A realtor's subscription to one tier. Status mirrors Stripe's own
+ * subscription status, kept in sync by the webhook
+ * (customer.subscription.updated/deleted) rather than re-queried from
+ * Stripe on every page load. A new gift card (sourceType =
+ * "realtor_subscription") is issued to the realtor each time
+ * invoice.payment_succeeded fires for this subscription -- see the
+ * webhook route.
+ */
+export const realtorSubscriptions = pgTable("realtor_subscriptions", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  realtorId: uuid("realtor_id")
+    .notNull()
+    .references(() => admins.id)
+    .unique(),
+  tierId: uuid("tier_id")
+    .notNull()
+    .references(() => realtorSubscriptionTiers.id),
+  // "incomplete" | "active" | "past_due" | "canceled"
+  status: text("status").notNull().default("incomplete"),
+  stripeCustomerId: text("stripe_customer_id").notNull(),
+  stripeSubscriptionId: text("stripe_subscription_id").notNull().unique(),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });

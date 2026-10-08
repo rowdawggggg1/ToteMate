@@ -24,7 +24,14 @@
 
 import { and, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { addOns, orders, packages, rentalAgreementVersions } from "@/lib/db/schema";
+import {
+  addOns,
+  orders,
+  packages,
+  rentalAgreementVersions,
+  type giftCards,
+  type referralCodes,
+} from "@/lib/db/schema";
 import {
   checkDeliveryDateAvailability,
   checkDailyCapacity,
@@ -46,6 +53,14 @@ import {
 import { generateManageToken, hashManageToken } from "@/lib/manage-token";
 import { getStripe } from "@/lib/stripe";
 import { writeAudit } from "@/lib/audit";
+import { sendBookingConfirmationEmail } from "@/lib/email";
+import {
+  calculateReferralAmounts,
+  findActiveReferralCode,
+  isSelfReferral,
+  recordReferralRedemption,
+} from "@/lib/referrals";
+import { applyGiftCardToOrder, findUsableGiftCard, giftCardBlocksReferralCode } from "@/lib/giftcards";
 
 export type AddressInput = {
   street: string;
@@ -83,6 +98,11 @@ export type CreateBookingInput = {
 
   agreementVersionId: string;
   agreementSignatureDataUrl: string;
+
+  // --- Phase 5: optional referral code and/or gift card, verified and
+  // applied server-side -- never trust a discount amount from the browser.
+  referralCode?: string;
+  giftCardCode?: string;
 };
 
 export type CreateBookingResult =
@@ -90,7 +110,10 @@ export type CreateBookingResult =
       ok: true;
       orderId: string;
       orderNumber: string;
-      clientSecret: string;
+      // False when a gift card covered the entire total -- there's no
+      // PaymentIntent to confirm, the order is already paid.
+      requiresPayment: boolean;
+      clientSecret: string | null;
       finalAmountCents: number;
       manageToken: string;
     }
@@ -291,9 +314,49 @@ export async function createBookingOrderAndPaymentIntent(
     pickupFreeRadiusKm: Number(settings.pickupFreeRadiusKm),
     pickupRateCentsPerKm: settings.pickupRateCentsPerKm,
   });
-  const finalAmountCents = resolveFinalAmountCents(pricing.computedTotalCents, null);
+  const computedTotalCents = resolveFinalAmountCents(pricing.computedTotalCents, null);
 
-  if (finalAmountCents <= 0) {
+  // --- Phase 5: referral code + gift card (both optional, both verified
+  // server-side) -----------------------------------------------------------
+
+  let referralCode: typeof referralCodes.$inferSelect | null = null;
+  let referralDiscountCents = 0;
+  let referrerRewardCents = 0;
+  if (input.referralCode) {
+    const lookup = await findActiveReferralCode(input.referralCode);
+    if (!lookup.ok) return { ok: false, error: lookup.error };
+    if (isSelfReferral(lookup.referralCode, input.customerEmail)) {
+      return { ok: false, error: "You can't use your own referral code." };
+    }
+    referralCode = lookup.referralCode;
+    const amounts = calculateReferralAmounts(settings, referralCode, computedTotalCents);
+    referralDiscountCents = amounts.refereeDiscountCents;
+    referrerRewardCents = amounts.referrerRewardCents;
+  }
+
+  let giftCard: typeof giftCards.$inferSelect | null = null;
+  let giftCardAmountToApplyCents = 0;
+  if (input.giftCardCode) {
+    const lookup = await findUsableGiftCard(input.giftCardCode);
+    if (!lookup.ok) return { ok: false, error: lookup.error };
+    giftCard = lookup.giftCard;
+    if (referralCode && giftCardBlocksReferralCode(giftCard)) {
+      return {
+        ok: false,
+        error:
+          "This gift card can't be combined with a referral code, since it already came with a discount. You're welcome to use one or the other.",
+      };
+    }
+    const amountAfterReferral = Math.max(0, computedTotalCents - referralDiscountCents);
+    giftCardAmountToApplyCents = Math.min(giftCard.balanceCents, amountAfterReferral);
+  }
+
+  const finalAmountCents = Math.max(
+    0,
+    computedTotalCents - referralDiscountCents - giftCardAmountToApplyCents
+  );
+
+  if (computedTotalCents <= 0) {
     return { ok: false, error: "There was a problem calculating the total for this order." };
   }
 
@@ -304,25 +367,32 @@ export async function createBookingOrderAndPaymentIntent(
 
   const stripe = getStripe();
 
-  // A Stripe Customer + setup_future_usage: "off_session" saves this card
-  // for later, so an admin can charge a late fee on-demand afterward
-  // (Phase 4) without the customer re-entering their card. This only
-  // *saves* the method -- nothing is ever charged again without a
-  // separate, explicit admin action later.
-  const stripeCustomer = await stripe.customers.create({
-    name: input.customerName,
-    email: input.customerEmail,
-    phone: input.customerPhone,
-  });
-
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: finalAmountCents,
-    currency: settings.currency.toLowerCase(),
-    customer: stripeCustomer.id,
-    automatic_payment_methods: { enabled: true },
-    setup_future_usage: "off_session",
-    metadata: { orderNumber: "" }, // filled in once we know the order id, below
-  });
+  // A gift card can cover the entire order (finalAmountCents === 0) --
+  // there's then nothing for Stripe to charge, so no Customer/PaymentIntent
+  // is created at all; the order is marked paid immediately below instead
+  // of waiting on the webhook. Otherwise, a Stripe Customer +
+  // setup_future_usage: "off_session" saves the card for later, so an
+  // admin can charge a late fee on-demand afterward (Phase 4) without the
+  // customer re-entering their card. This only *saves* the method --
+  // nothing is ever charged again without a separate, explicit admin
+  // action later.
+  const requiresPayment = finalAmountCents > 0;
+  let paymentIntent: Awaited<ReturnType<typeof stripe.paymentIntents.create>> | null = null;
+  if (requiresPayment) {
+    const stripeCustomer = await stripe.customers.create({
+      name: input.customerName,
+      email: input.customerEmail,
+      phone: input.customerPhone,
+    });
+    paymentIntent = await stripe.paymentIntents.create({
+      amount: finalAmountCents,
+      currency: settings.currency.toLowerCase(),
+      customer: stripeCustomer.id,
+      automatic_payment_methods: { enabled: true },
+      setup_future_usage: "off_session",
+      metadata: { orderNumber: "" }, // filled in once we know the order id, below
+    });
+  }
 
   let orderId: string | undefined;
   let orderNumber = generateOrderNumber();
@@ -334,7 +404,7 @@ export async function createBookingOrderAndPaymentIntent(
         .insert(orders)
         .values({
           orderNumber,
-          status: "payment_pending",
+          status: requiresPayment ? "payment_pending" : "scheduled",
           customerName: input.customerName,
           customerEmail: input.customerEmail,
           customerPhone: input.customerPhone,
@@ -382,11 +452,18 @@ export async function createBookingOrderAndPaymentIntent(
           deliveryFeeCents: pricing.deliveryFeeCents,
           pickupFeeCents: pricing.pickupFeeCents,
 
+          referralCodeId: referralCode?.id ?? null,
+          referralDiscountCents,
+          referralRewardOwedCents: referrerRewardCents,
+          giftCardId: giftCard?.id ?? null,
+          giftCardAmountAppliedCents: giftCardAmountToApplyCents,
+
           finalAmountCents,
           currency: settings.currency,
 
-          paymentStatus: "pending",
-          stripePaymentIntentId: paymentIntent.id,
+          paymentStatus: requiresPayment ? "pending" : "paid",
+          paidAt: requiresPayment ? null : new Date(),
+          stripePaymentIntentId: paymentIntent?.id ?? null,
 
           agreementVersionId: agreement.id,
           agreementVersionLabel: agreement.versionLabel,
@@ -410,7 +487,9 @@ export async function createBookingOrderAndPaymentIntent(
 
   if (!orderId) {
     // Clean up the PaymentIntent we created but never attached to an order.
-    await stripe.paymentIntents.cancel(paymentIntent.id).catch(() => {});
+    if (paymentIntent) {
+      await stripe.paymentIntents.cancel(paymentIntent.id).catch(() => {});
+    }
     await writeAudit({
       actor: { type: "system" },
       action: "ORDER_CREATION_FAILED",
@@ -418,6 +497,50 @@ export async function createBookingOrderAndPaymentIntent(
       notes: lastInsertError instanceof Error ? lastInsertError.message : String(lastInsertError),
     }).catch(() => {});
     return { ok: false, error: "We couldn't create your booking. Please try again." };
+  }
+
+  if (!requiresPayment) {
+    // Fully covered by a gift card -- there's no webhook coming, so apply
+    // the gift card balance / record the referral redemption and send the
+    // confirmation email right here, synchronously, the same way the
+    // webhook does for a normal paid order (see
+    // app/api/stripe/webhook/route.ts's handlePaymentSucceeded).
+    if (giftCard) {
+      await applyGiftCardToOrder({
+        giftCard,
+        orderId,
+        orderTotalBeforeGiftCardCents: Math.max(0, computedTotalCents - referralDiscountCents),
+      });
+    }
+    if (referralCode) {
+      await recordReferralRedemption({
+        referralCodeId: referralCode.id,
+        orderId,
+        refereeDiscountCents: referralDiscountCents,
+        referrerRewardCents,
+      });
+    }
+    await writeAudit({ actor: { type: "system" }, action: "ORDER_PAID", entityType: "order", entityId: orderId });
+
+    const paidOrderRows = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (paidOrderRows[0]) {
+      await sendBookingConfirmationEmail(paidOrderRows[0], manageToken).catch(() => {});
+    }
+
+    return {
+      ok: true,
+      orderId,
+      orderNumber,
+      requiresPayment: false,
+      clientSecret: null,
+      finalAmountCents,
+      manageToken,
+    };
+  }
+
+  // requiresPayment is true here, so paymentIntent was always created above.
+  if (!paymentIntent) {
+    return { ok: false, error: "We couldn't start payment for this booking. Please try again." };
   }
 
   await stripe.paymentIntents.update(paymentIntent.id, {
@@ -432,6 +555,7 @@ export async function createBookingOrderAndPaymentIntent(
     ok: true,
     orderId,
     orderNumber,
+    requiresPayment: true,
     clientSecret: paymentIntent.client_secret,
     finalAmountCents,
     manageToken,

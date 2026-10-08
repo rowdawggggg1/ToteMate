@@ -6,7 +6,7 @@
 
 import nodemailer from "nodemailer";
 import type { Transporter } from "nodemailer";
-import type { orders } from "@/lib/db/schema";
+import type { giftCards, orders } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
 
 type OrderRow = typeof orders.$inferSelect;
@@ -110,6 +110,50 @@ export async function sendLateFeeChargedEmail(
     .join("\n");
 
   await send(order.customerEmail, subject, text);
+}
+
+/**
+ * Phase 5: sent once a purchased gift card's Checkout Session completes
+ * (see app/api/stripe/webhook/route.ts's handleCheckoutSessionCompleted).
+ * The code goes to the recipient when one was given (so it reads as a
+ * gift, not a receipt); either way it also goes to the purchaser, since
+ * that's the account Stripe actually charged and who may need the code
+ * again later.
+ */
+export async function sendGiftCardPurchaseEmail(
+  giftCard: typeof giftCards.$inferSelect
+): Promise<void> {
+  const amount = `$${centsToDollarsString(giftCard.initialValueCents)}`;
+
+  if (giftCard.recipientEmail) {
+    const recipientText = [
+      giftCard.recipientName ? `Hi ${giftCard.recipientName},` : "Hi,",
+      "",
+      giftCard.purchasedByName
+        ? `${giftCard.purchasedByName} sent you a ${amount} gift card!`
+        : `You've received a ${amount} gift card!`,
+      "",
+      `Your gift card code: ${giftCard.code}`,
+      "",
+      "Use this code at checkout when you book. It never expires.",
+    ].join("\n");
+    await send(giftCard.recipientEmail, `You've received a ${amount} gift card!`, recipientText);
+  }
+
+  if (giftCard.purchasedByEmail) {
+    const purchaserText = [
+      `Hi ${giftCard.purchasedByName ?? ""}`.trim() + ",",
+      "",
+      giftCard.recipientEmail
+        ? `Your ${amount} gift card has been sent to ${giftCard.recipientEmail}.`
+        : `Your ${amount} gift card is ready to use.`,
+      "",
+      `Gift card code: ${giftCard.code}`,
+      "",
+      "Thanks for your purchase!",
+    ].join("\n");
+    await send(giftCard.purchasedByEmail, `Your ${amount} gift card -- receipt`, purchaserText);
+  }
 }
 
 export async function sendRescheduleEmail(order: OrderRow): Promise<void> {

@@ -43,12 +43,15 @@ export async function loginAction(
     return { error: result.error };
   }
 
-  // Driver accounts share this login form/table but have no business in
-  // the full admin panel (requireAdmin() would bounce them right back out
-  // anyway) -- send them straight to their own portal instead, ignoring
-  // whatever "next" was on the URL.
-  if (result.admin.role !== "owner") {
+  // Driver/realtor accounts share this login form/table but have no
+  // business in the full admin panel (requireAdmin() would bounce them
+  // right back out anyway) -- send them straight to their own portal
+  // instead, ignoring whatever "next" was on the URL.
+  if (result.admin.role === "driver") {
     redirect("/driver");
+  }
+  if (result.admin.role === "realtor") {
+    redirect("/realtor");
   }
 
   redirect(safeNextPath(parsed.data.next));

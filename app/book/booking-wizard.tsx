@@ -103,6 +103,9 @@ export function BookingWizard({
   const [pickupAddress, setPickupAddress] = useState<AddressForm>(emptyAddress);
   const [pickupInstructions, setPickupInstructions] = useState("");
 
+  const [referralCode, setReferralCode] = useState("");
+  const [giftCardCode, setGiftCardCode] = useState("");
+
   const [agreementChecked, setAgreementChecked] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -169,6 +172,8 @@ export function BookingWizard({
       pickupInstructions: pickupSameAsDelivery ? undefined : pickupInstructions || undefined,
       agreementVersionId: agreement.id,
       agreementSignatureDataUrl: signatureDataUrl,
+      referralCode: referralCode.trim() || undefined,
+      giftCardCode: giftCardCode.trim() || undefined,
     });
 
     setSubmitting(false);
@@ -179,7 +184,9 @@ export function BookingWizard({
     }
 
     setBooking(result);
-    setStep(4);
+    // A gift card can cover the entire total -- there's no payment step
+    // to run in that case, the order is already paid.
+    setStep(result.requiresPayment ? 4 : 5);
   }
 
   return (
@@ -321,6 +328,10 @@ export function BookingWizard({
                   className={inputClass}
                 />
               </FormField>
+              <p className="text-xs text-[var(--color-muted)]">
+                Addresses farther from us may be subject to a delivery and/or pickup fee based on
+                distance -- this is calculated automatically and shown before you pay.
+              </p>
             </div>
           </div>
 
@@ -440,6 +451,31 @@ export function BookingWizard({
           </div>
 
           <div>
+            <h3 className="font-medium text-[var(--color-text)]">Referral code or gift card (optional)</h3>
+            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+              <FormField label="Referral code">
+                <input
+                  value={referralCode}
+                  onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. AB12CD3"
+                  className={inputClass}
+                />
+              </FormField>
+              <FormField label="Gift card code">
+                <input
+                  value={giftCardCode}
+                  onChange={(e) => setGiftCardCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. GFT-XXXXX-XXXXX"
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              Codes are verified and applied to your total on the next step.
+            </p>
+          </div>
+
+          <div>
             <h2 className="text-xl font-semibold text-[var(--color-text)]">Rental agreement</h2>
             <p className="mt-1 text-xs text-[var(--color-muted)]">Version {agreement.versionLabel}</p>
             <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 font-mono text-xs leading-relaxed">
@@ -479,7 +515,7 @@ export function BookingWizard({
         </div>
       )}
 
-      {step === 4 && booking && stripePromise && (
+      {step === 4 && booking && booking.requiresPayment && booking.clientSecret && stripePromise && (
         <div className="mt-8">
           <h2 className="text-xl font-semibold text-[var(--color-text)]">Payment</h2>
           <p className="mt-2 text-sm text-[var(--color-muted)]">
@@ -506,6 +542,11 @@ export function BookingWizard({
             Order <span className="font-medium">{booking.orderNumber}</span>. A confirmation
             email is on its way to {customerEmail}.
           </p>
+          {!booking.requiresPayment && (
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              Your gift card covered the full total -- nothing was charged.
+            </p>
+          )}
           <a
             href={`/manage/${booking.orderId}?token=${booking.manageToken}`}
             className="mt-4 inline-block rounded-lg bg-[var(--color-primary)] px-5 py-2.5 text-sm font-medium text-white"

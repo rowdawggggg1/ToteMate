@@ -44,9 +44,11 @@ phase. A richer content-editing pass can be added later if wanted --
 deliberately not building a full page-builder now, per the "don't
 over-engineer" guidance in the spec.
 
-Not built yet: the real booking flow, Stripe payments, the admin
-calendar, inventory/tote management, the Realtor portal, driver accounts,
-financial reporting, referrals, gift certificates, and reviews.
+Not built yet (as of Phase 2): the real booking flow, Stripe payments, the
+admin calendar, inventory/tote management, the Realtor portal, driver
+accounts, financial reporting, referrals, gift certificates, and reviews.
+(Everything in that list except reviews has since been built -- see the
+later phase sections below.)
 
 ## Phase 2 update: branding, photos, and SMS contact
 
@@ -242,6 +244,96 @@ have been booked *after* this phase was deployed -- only then does the
 booking flow save a card on file. Orders from before this phase can still
 have late fees recorded, just not charged through the app.
 
+## Phase 5 (this delivery): money, growth & reporting
+
+Revenue and marketing features, on top of Phase 4's day-to-day operations:
+
+* **Referral codes**: every customer gets a referral code generated
+  automatically the first time they look for one (lazy creation, no
+  admin setup needed). Realtors get a code created for them as part of
+  their account. In Admin -> Referrals, the owner sets:
+  * the **referrer's reward** (always applied when their code is used --
+    either a flat $ amount or a %), and
+  * an optional, independently toggleable **referee discount** ($ or %
+    off the referred customer's own order).
+  A realtor's own code earns the realtor nothing by default (a "realtors
+  earn referrer reward too" toggle exists for later, off by default).
+  Referrer rewards are **tracked as owed, not auto-paid** -- the owner
+  pays the referrer manually (e-transfer, cash, etc.) and marks the
+  reward "Paid" from Admin -> Referrals once they do. A customer can't
+  refer themselves.
+* **Gift cards**, two ways:
+  * **Admin-issued**, for free, from Admin -> Gift Cards (e.g. as a
+    customer-service gesture).
+  * **Purchased**, by anyone, at `/gift-cards` (public) or by a realtor
+    from their own portal -- fixed, admin-configurable denominations
+    (e.g. $50/$100/$150), paid through Stripe Checkout. The gift card is
+    only created once Stripe confirms the payment.
+  A gift card and a referral code **can normally both be used on one
+  order**, except: a gift card that came from a **realtor's
+  subscription** (see below) can't be combined with a referral code on
+  the same order, since the realtor is already getting a discount for
+  that customer and this prevents stacking two discounts from the same
+  source. Gift cards bought at full price (by the public or by a
+  realtor) have no such restriction.
+* **Realtor program** (`/realtor`, managed from Admin -> Realtors):
+  realtors are staff accounts (`admins` rows with `role: "realtor"`,
+  following the exact same pattern as Phase 4's driver accounts) an
+  owner creates individually. From their own portal a realtor can see
+  their referral code, subscribe to a plan, and buy ad-hoc gift cards.
+  * **Subscription tiers** (Admin -> Realtor Tiers): the owner defines
+    multiple plans (name, monthly or yearly price, and the gift-card
+    value it issues each cycle). Each tier syncs to a Stripe
+    Product/Price automatically when saved -- changing a tier's price or
+    billing cadence creates a new Stripe Price (Stripe Prices are
+    immutable) rather than ever editing one in place.
+  * A realtor subscribes through Stripe Checkout (recurring billing).
+    Every time Stripe confirms a cycle was paid (`invoice.payment_succeeded`,
+    which fires for the first cycle too), that realtor is automatically
+    issued a new gift card for that tier's configured value.
+  * A realtor can cancel any time; the subscription stays active through
+    the period already paid for, then stops.
+* **Driver and realtor removal**: Admin -> Drivers/Realtors now has a
+  real "Remove" option on each account's edit page (previously you could
+  only deactivate one, never remove it). It tries to delete the account
+  outright; if that account is referenced by historical records (past
+  late fees, a referral code, issued gift cards, a subscription), it
+  automatically falls back to deactivating it instead and leaves a note
+  in the audit log explaining why, so nothing referencing that account
+  ever breaks.
+* **Financial reporting** (Admin -> Reports): revenue by day/week/month
+  and by package, for a chosen date range, plus totals for late fees
+  collected, gift cards sold, referral discounts given, and referral
+  rewards still owed. Revenue is recognized on the date payment actually
+  succeeded, not the delivery date. A "Export CSV" button downloads the
+  same report as a CSV file.
+* **Booking flow**: added an optional "Referral code or gift card" entry
+  at checkout, and a note near the delivery/pickup address fields that
+  addresses farther away may carry a delivery/pickup fee (the existing
+  distance-based pricing already calculated this -- this just surfaces
+  it before payment instead of only at the final total).
+
+**Scope note:** reviews/testimonials were explicitly deferred past Phase
+5 per the business owner's own scoping decision, and are not part of
+this delivery.
+
+Database-wise, this phase adds eight new tables (`referral_codes`,
+`referral_redemptions`, `gift_card_denominations`, `gift_cards`,
+`gift_card_redemptions`, `realtor_subscription_tiers`,
+`realtor_subscriptions`) and new columns on `business_settings` (the
+referral reward/discount settings) and `orders` (the referral/gift-card
+amounts applied to each order). Run `npm run db:push` after updating --
+additive only, nothing dropped.
+
+**New Stripe webhook events required.** Your Stripe Dashboard webhook
+endpoint now needs to be subscribed to four additional events beyond
+Phase 3/4's `payment_intent.succeeded` / `payment_intent.payment_failed`:
+`checkout.session.completed`, `invoice.payment_succeeded`,
+`customer.subscription.updated`, and `customer.subscription.deleted`.
+Add these to the endpoint's event list in the Stripe Dashboard -- no new
+environment variables are needed, the existing `STRIPE_WEBHOOK_SECRET`
+covers all events on that same endpoint.
+
 ## Tech stack
 
 * Next.js 16 (App Router, Server Actions)
@@ -339,14 +431,22 @@ app/
     page.tsx                      Validates the token, shows the booking
     manage-booking-client.tsx     Cancel / reschedule UI
     actions.ts                    cancelBookingAction, rescheduleBookingAction
-  realtors/                       Realtor portal placeholder (real one: later phase)
+  realtors/                       Public realtor-program info page + sign-in link
+  gift-cards/                     Public gift card purchase page
   setup/                          First-run admin creation
-  api/stripe/webhook/route.ts     Stripe webhook (idempotent order finalization)
+  api/stripe/webhook/route.ts     Stripe webhook (order finalization, gift
+                                   card purchases, realtor subscription cycles)
   driver/                         Driver portal (role: "driver" staff accounts)
     login/                        Driver login (separate front door, shared table)
     layout.tsx                    requireStaff() gate + simple header
     page.tsx                      Shared job list (every delivery/pickup due)
     driver-jobs-client.tsx        Mark Delivered/Picked Up (reuses admin actions)
+  realtor/                        Realtor portal (role: "realtor" staff accounts)
+    login/                        Realtor login (separate front door, shared table)
+    layout.tsx                    requireRealtor() gate + simple header
+    page.tsx                      Referral code, subscription status/tier
+                                   picker, gift card purchase, issued cards
+    dashboard-client.tsx          Subscribe/cancel/purchase client forms
   admin/
     login/                        Admin login (outside the auth gate)
     (protected)/                  Everything behind requireAdmin() (owner-only)
@@ -359,16 +459,21 @@ app/
       agreements/                 Rental agreement versions (draft/publish)
       blocked-dates/              Owner-blocked delivery/pickup dates
       calendar/                   Month view, drag-to-reschedule deliveries
-      drivers/                    Create/edit driver accounts (list/new/[id])
+      drivers/                    Create/edit/remove driver accounts (list/new/[id])
+      realtors/                   Create/edit/remove realtor accounts (list/new/[id])
+      realtor-tiers/              Subscription tier management (list/new/[id])
+      referrals/                  Referral settings + payout tracking
+      gift-cards/                 Issue gift cards, manage denominations
       orders/                     Order list/detail, status, tote assignment,
                                    late fees (record + on-demand Stripe charge)
+      reports/                    Revenue report (by period/package) + CSV export
       settings/                   Business Settings
 lib/
   db/                             Drizzle schema + lazy DB client
   auth/                           Password hashing, sessions, login.ts
-                                  (shared by /admin and /driver login),
-                                  requireAdmin (owner-only) vs requireStaff
-                                  (owner or driver)
+                                  (shared by /admin, /driver and /realtor login),
+                                  requireAdmin (owner-only), requireStaff
+                                  (owner or driver), requireRealtor (realtor-only)
   reschedule.ts                   Shared "move this order's delivery date"
                                   logic -- used by Manage My Booking AND
                                   the admin calendar's drag-and-drop
@@ -383,11 +488,20 @@ lib/
                                   tote inventory, cancellation-window math --
                                   shared by booking, admin, and Manage My Booking
   orders.ts                       The booking pipeline: validates everything
-                                  above, prices the order, creates it +
-                                  a Stripe PaymentIntent
+                                  above, prices the order (incl. referral/gift
+                                  card discounts), creates it + a Stripe
+                                  PaymentIntent (or skips payment entirely if a
+                                  gift card covers the full total)
+  referrals.ts                    Referral code generation/lookup, reward/
+                                  discount calculation, redemption recording
+  giftcards.ts                    Gift card creation/lookup/redemption,
+                                  denomination management, Checkout sessions
+  realtor-subscriptions.ts        Stripe Product/Price sync for tiers,
+                                  subscription Checkout, cycle-paid handling
+  reports.ts                      Revenue aggregation (by period/package) + CSV
   stripe.ts                       Lazy Stripe client
   email.ts                        Gmail SMTP confirmation/cancellation/
-                                  reschedule emails
+                                  reschedule/gift-card-purchase emails
   manage-token.ts                 Manage My Booking's opaque-token-hash
                                   helper (same pattern as admin sessions)
   audit.ts                        Audit log writer
@@ -401,7 +515,7 @@ proxy.ts                          Next.js 16's request interceptor
                                   (replaces middleware.ts); does a fast
                                   cookie-presence check only -- real
                                   session validation happens server-side
-                                  in requireAdmin()
+                                  in requireAdmin() / requireRealtor()
 ```
 
 ## Design notes worth knowing before extending this
@@ -443,3 +557,19 @@ proxy.ts                          Next.js 16's request interceptor
   keep roughly a week's history, no IP/device tracking). A scheduled
   cleanup job hasn't been built yet -- add one later only if it actually
   becomes necessary.
+* **Referral/gift-card side effects wait for confirmed payment.**
+  `lib/orders.ts` freezes the referral discount, referrer reward owed,
+  and gift card amount onto the order row at booking time, but doesn't
+  deduct the gift card balance or record the referral redemption yet --
+  that happens in the Stripe webhook's `handlePaymentSucceeded`, once
+  payment is actually confirmed, the same way `stripeCustomerId`/
+  `stripePaymentMethodId` are only captured there. This avoids wrongly
+  deducting a gift card or owing a referral reward for a booking whose
+  payment never completes. The one exception is a gift card that covers
+  the entire order (nothing left to charge, so there's no PaymentIntent
+  and no webhook) -- `lib/orders.ts` applies those side effects inline
+  instead, mirroring the webhook's own logic.
+* **Stripe Prices are immutable**, so `lib/realtor-subscriptions.ts`
+  never edits one -- a changed tier price or billing cadence creates a
+  new Stripe Price and archives the old one. A name-only tier edit does
+  not create a new Price.

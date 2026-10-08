@@ -27,18 +27,26 @@ export default async function RealtorsPage() {
             Realtor Program
           </h1>
           <p className="mt-3 text-[var(--color-muted)]">
-            The Realtor portal -- gift certificates for your clients and more -- is
-            launching soon. If you're a realtor interested in partnering with{" "}
-            {businessName}, get in touch.
+            Give your clients a referral code, send them a discounted gift card through a
+            subscription, or buy one ad-hoc. Interested in partnering with {businessName}? Get in
+            touch, and once we've set up your account you can sign in below.
           </p>
-          {settings?.contactEmail && (
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
             <a
-              href={`mailto:${settings.contactEmail}`}
-              className="mt-6 inline-block rounded-lg bg-[var(--color-primary)] px-6 py-3 text-sm font-medium text-white"
+              href="/realtor/login"
+              className="inline-block rounded-lg bg-[var(--color-primary)] px-6 py-3 text-sm font-medium text-white"
             >
-              Contact Us
+              Realtor Sign In
             </a>
-          )}
+            {settings?.contactEmail && (
+              <a
+                href={`mailto:${settings.contactEmail}`}
+                className="inline-block rounded-lg border border-[var(--color-border)] px-6 py-3 text-sm font-medium text-[var(--color-text)]"
+              >
+                Contact Us
+              </a>
+            )}
+          </div>
         </div>
       </main>
       <SiteFooter

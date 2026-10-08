@@ -10,7 +10,7 @@ import { requireAdmin } from "@/lib/auth/admin";
 import { hashPassword } from "@/lib/auth/password";
 import { writeAudit } from "@/lib/audit";
 
-export type DriverActionState = {
+export type RealtorActionState = {
   error?: string;
   fieldErrors?: Record<string, string>;
 };
@@ -30,10 +30,10 @@ const createSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters."),
 });
 
-export async function createDriverAction(
-  _prevState: DriverActionState,
+export async function createRealtorAction(
+  _prevState: RealtorActionState,
   formData: FormData
-): Promise<DriverActionState> {
+): Promise<RealtorActionState> {
   const admin = await requireAdmin();
   const parsed = createSchema.safeParse({
     name: formData.get("name"),
@@ -63,25 +63,25 @@ export async function createDriverAction(
       name: parsed.data.name,
       email: parsed.data.email,
       passwordHash,
-      role: "driver",
+      role: "realtor",
     })
     .returning({ id: admins.id });
   const newId = inserted[0]?.id;
 
   if (!newId) {
-    return { error: "We couldn't create this driver account. Please try again." };
+    return { error: "We couldn't create this realtor account. Please try again." };
   }
 
   await writeAudit({
     actor: { type: "admin", id: admin.id, email: admin.email },
-    action: "DRIVER_CREATED",
+    action: "REALTOR_CREATED",
     entityType: "admin",
     entityId: newId,
     after: { name: parsed.data.name, email: parsed.data.email },
   });
 
-  revalidatePath("/admin/drivers");
-  redirect("/admin/drivers");
+  revalidatePath("/admin/realtors");
+  redirect("/admin/realtors");
 }
 
 const updateSchema = z.object({
@@ -91,11 +91,11 @@ const updateSchema = z.object({
   newPassword: z.string().trim().optional().default(""),
 });
 
-export async function updateDriverAction(
-  driverId: string,
-  _prevState: DriverActionState,
+export async function updateRealtorAction(
+  realtorId: string,
+  _prevState: RealtorActionState,
   formData: FormData
-): Promise<DriverActionState> {
+): Promise<RealtorActionState> {
   const admin = await requireAdmin();
   const parsed = updateSchema.safeParse({
     name: formData.get("name"),
@@ -117,11 +117,11 @@ export async function updateDriverAction(
   const existingRows = await db
     .select()
     .from(admins)
-    .where(eq(admins.id, driverId))
+    .where(eq(admins.id, realtorId))
     .limit(1);
   const existing = existingRows[0];
-  if (!existing || existing.role !== "driver") {
-    return { error: "This driver account no longer exists." };
+  if (!existing || existing.role !== "realtor") {
+    return { error: "This realtor account no longer exists." };
   }
 
   const emailTaken = await db
@@ -129,7 +129,7 @@ export async function updateDriverAction(
     .from(admins)
     .where(eq(admins.email, parsed.data.email))
     .limit(1);
-  if (emailTaken.length > 0 && emailTaken[0].id !== driverId) {
+  if (emailTaken.length > 0 && emailTaken[0].id !== realtorId) {
     return { fieldErrors: { email: "Another account already uses this email." } };
   }
 
@@ -145,66 +145,66 @@ export async function updateDriverAction(
     nextValues.lockedUntil = null;
   }
 
-  await db.update(admins).set(nextValues).where(eq(admins.id, driverId));
+  await db.update(admins).set(nextValues).where(eq(admins.id, realtorId));
 
   await writeAudit({
     actor: { type: "admin", id: admin.id, email: admin.email },
-    action: "DRIVER_UPDATED",
+    action: "REALTOR_UPDATED",
     entityType: "admin",
-    entityId: driverId,
+    entityId: realtorId,
     before: { name: existing.name, email: existing.email, isActive: existing.isActive },
     after: { name: parsed.data.name, email: parsed.data.email, isActive: parsed.data.isActive },
     notes: parsed.data.newPassword ? "Password was reset." : undefined,
   });
 
-  revalidatePath("/admin/drivers");
-  redirect("/admin/drivers");
+  revalidatePath("/admin/realtors");
+  redirect("/admin/realtors");
 }
 
 /**
- * Removes a driver account. Hard-deletes it when nothing else references
- * it; if the driver has history attached elsewhere (e.g. they recorded a
- * late fee on an order), that FK reference blocks the delete, so this
- * falls back to deactivating the account instead -- same end result from
- * the owner's point of view (the driver can no longer log in), without
- * silently breaking an old order's record of who recorded that fee.
+ * Removes a realtor account. Hard-deletes it when nothing else references
+ * it; if the realtor has history attached (a referral code, a gift card
+ * issued to them, a subscription), that FK reference blocks the delete,
+ * so this falls back to deactivating the account instead -- same end
+ * result from the owner's point of view (they can no longer log in),
+ * without silently breaking that history.
  */
-export async function deleteDriverAction(driverId: string): Promise<void> {
+export async function deleteRealtorAction(realtorId: string): Promise<void> {
   const admin = await requireAdmin();
   const db = getDb();
 
   const rows = await db
     .select()
     .from(admins)
-    .where(and(eq(admins.id, driverId), eq(admins.role, "driver")))
+    .where(and(eq(admins.id, realtorId), eq(admins.role, "realtor")))
     .limit(1);
   const existing = rows[0];
   if (!existing) return;
 
   try {
-    await db.delete(admins).where(eq(admins.id, driverId));
+    await db.delete(admins).where(eq(admins.id, realtorId));
     await writeAudit({
       actor: { type: "admin", id: admin.id, email: admin.email },
-      action: "DRIVER_DELETED",
+      action: "REALTOR_DELETED",
       entityType: "admin",
-      entityId: driverId,
+      entityId: realtorId,
       before: { name: existing.name, email: existing.email },
     });
   } catch {
     await db
       .update(admins)
       .set({ isActive: false, updatedAt: new Date() })
-      .where(eq(admins.id, driverId));
+      .where(eq(admins.id, realtorId));
     await writeAudit({
       actor: { type: "admin", id: admin.id, email: admin.email },
-      action: "DRIVER_DEACTIVATED_INSTEAD_OF_DELETED",
+      action: "REALTOR_DEACTIVATED_INSTEAD_OF_DELETED",
       entityType: "admin",
-      entityId: driverId,
+      entityId: realtorId,
       notes:
-        "Couldn't be hard-deleted -- this driver has history attached (e.g. a recorded late fee), so they were deactivated instead.",
+        "Couldn't be hard-deleted -- this realtor has history attached (a referral code, gift card, or subscription), so they were deactivated instead.",
     });
   }
 
-  revalidatePath("/admin/drivers");
-  redirect("/admin/drivers");
+  revalidatePath("/admin/realtors");
+  redirect("/admin/realtors");
 }
