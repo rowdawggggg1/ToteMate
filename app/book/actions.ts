@@ -1,16 +1,12 @@
 "use server";
 
-import { eq } from "drizzle-orm";
-import { getDb } from "@/lib/db";
-import { orders } from "@/lib/db/schema";
 import {
+  cancelPendingBooking,
   createBookingOrderAndPaymentIntent,
+  isOrderReady,
   type CreateBookingInput,
   type CreateBookingResult,
 } from "@/lib/orders";
-import { hashManageToken } from "@/lib/manage-token";
-import { getStripe } from "@/lib/stripe";
-import { sendBookingConfirmationEmail } from "@/lib/email";
 
 /**
  * Thin Server Action boundary so the client wizard can call the booking
@@ -24,33 +20,23 @@ export async function submitBookingAction(
 }
 
 /**
- * Called by the booking wizard right after Stripe confirms payment
- * client-side. The webhook (app/api/stripe/webhook/route.ts) is still the
- * authoritative record of payment success -- this is a best-effort,
- * faster path to send the confirmation email without waiting on webhook
- * delivery, since the raw manage token only ever exists in the browser's
- * memory at this point (only its hash is stored server-side). Re-verifies
- * the token and checks with Stripe directly before sending, so this can't
- * be used to spam arbitrary orders.
+ * Called when the customer clicks "Back" from the payment step (e.g. to
+ * fix an address). Deletes the staged booking and cancels its
+ * PaymentIntent, so it never lingers as a payment attempt and never
+ * becomes an order -- the wizard then returns to an earlier step so they
+ * can submit a fresh booking when ready.
  */
-export async function sendBookingConfirmationEmailAction(
-  orderId: string,
-  manageToken: string
-): Promise<void> {
-  try {
-    const db = getDb();
-    const rows = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-    const order = rows[0];
-    if (!order) return;
-    if (hashManageToken(manageToken) !== order.manageTokenHash) return;
-    if (!order.stripePaymentIntentId) return;
+export async function cancelPendingBookingAction(stripePaymentIntentId: string): Promise<void> {
+  await cancelPendingBooking(stripePaymentIntentId);
+}
 
-    const stripe = getStripe();
-    const paymentIntent = await stripe.paymentIntents.retrieve(order.stripePaymentIntentId);
-    if (paymentIntent.status !== "succeeded") return;
-
-    await sendBookingConfirmationEmail(order, manageToken);
-  } catch {
-    // Best-effort: never block the confirmation screen on email delivery.
-  }
+/**
+ * Polled by the confirmation screen right after Stripe confirms payment
+ * client-side, to ride out the brief race window before the webhook
+ * promotes the staged booking into a real order (the webhook is what
+ * actually sends the confirmation email and makes the order visible in
+ * Admin -- see app/api/stripe/webhook/route.ts).
+ */
+export async function isOrderReadyAction(orderId: string): Promise<boolean> {
+  return isOrderReady(orderId);
 }

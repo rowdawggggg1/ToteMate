@@ -24,7 +24,38 @@ export type GeocodeResult = {
   regionCode: string | null;
   /** Full region/province name as returned by the provider (e.g. "Alberta"). Used as a fallback when regionCode is missing. */
   regionName: string | null;
+  /** Pelias confidence score, 0-1. Null if the provider didn't supply one. */
+  confidence: number | null;
+  /** Pelias accuracy: "point" (a specific address/building) or "centroid"
+   * (the geocoder only matched a larger area -- a street, a town -- and
+   * picked its midpoint). Null if not supplied. */
+  accuracy: "point" | "centroid" | null;
+  /** Pelias match type: "exact" | "interpolated" (estimated along a street
+   * from numbered endpoints) | "fallback" (matched something broader than
+   * what was asked for, e.g. a street with no civic number). Null if not
+   * supplied. */
+  matchType: "exact" | "interpolated" | "fallback" | null;
 };
+
+/**
+ * A geocode that's risky to price/route from without the customer
+ * double-checking it -- e.g. "Township Road 444" with no house number,
+ * which Pelias can only match to some point along (or the midpoint of) the
+ * road rather than the actual destination. This is NOT a validation
+ * failure (the address isn't rejected) -- callers should surface the
+ * resolved address back to the customer for confirmation and encourage
+ * them to add a civic number/more detail when this is true, per the
+ * decision to solve ambiguous-address accuracy with confirmation + better
+ * input rather than by swapping routing providers.
+ */
+export function isLowConfidenceGeocode(geocode: GeocodeResult): boolean {
+  return (
+    geocode.accuracy === "centroid" ||
+    geocode.matchType === "fallback" ||
+    (geocode.confidence !== null && geocode.confidence < 0.8) ||
+    (geocode.confidence === null && geocode.accuracy === null && geocode.matchType === null)
+  );
+}
 
 export class RoutingError extends Error {
   constructor(message: string) {
@@ -91,12 +122,23 @@ export async function geocodeAddress(addressText: string): Promise<GeocodeResult
 
   const props = feature.properties ?? {};
 
+  const confidence = typeof props.confidence === "number" ? props.confidence : null;
+  const accuracy =
+    props.accuracy === "point" || props.accuracy === "centroid" ? props.accuracy : null;
+  const matchType =
+    props.match_type === "exact" || props.match_type === "interpolated" || props.match_type === "fallback"
+      ? props.match_type
+      : null;
+
   return {
     lat,
     lng,
     formatted: typeof props.label === "string" ? props.label : trimmed,
     regionCode: typeof props.region_a === "string" ? props.region_a : null,
     regionName: typeof props.region === "string" ? props.region : null,
+    confidence,
+    accuracy,
+    matchType,
   };
 }
 

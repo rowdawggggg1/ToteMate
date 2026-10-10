@@ -10,7 +10,7 @@ import {
 } from "@stripe/react-stripe-js";
 import { centsToDollarsString } from "@/lib/money";
 import { SignaturePad, type SignaturePadHandle } from "@/components/public/signature-pad";
-import { submitBookingAction, sendBookingConfirmationEmailAction } from "./actions";
+import { submitBookingAction, cancelPendingBookingAction, isOrderReadyAction } from "./actions";
 import type { CreateBookingResult } from "@/lib/orders";
 
 export type PackageOption = {
@@ -112,6 +112,10 @@ export function BookingWizard({
   const [booking, setBooking] = useState<
     Extract<CreateBookingResult, { ok: true }> | null
   >(null);
+  // True while we're waiting for the webhook to promote the staged
+  // booking into a real order after Stripe confirms payment client-side --
+  // see isOrderReadyAction / app/api/stripe/webhook/route.ts.
+  const [finalizing, setFinalizing] = useState(false);
 
   const signaturePadRef = useRef<SignaturePadHandle>(null);
 
@@ -187,6 +191,39 @@ export function BookingWizard({
     // A gift card can cover the entire total -- there's no payment step
     // to run in that case, the order is already paid.
     setStep(result.requiresPayment ? 4 : 5);
+  }
+
+  /** Cancels the staged booking/PaymentIntent (if any) and sends the
+   * customer back to a given step with a clean slate, so a fresh "Continue
+   * to payment" creates a new one rather than reusing a cancelled
+   * PaymentIntent. */
+  async function abandonPendingBookingAndGoTo(targetStep: 2 | 3) {
+    if (booking?.requiresPayment && booking.stripePaymentIntentId) {
+      await cancelPendingBookingAction(booking.stripePaymentIntentId);
+    }
+    setBooking(null);
+    setStep(targetStep);
+  }
+
+  /** After Stripe confirms payment client-side, waits briefly for the
+   * webhook to promote the staged booking into a real order before moving
+   * to the confirmation screen -- the webhook is what actually sends the
+   * confirmation email and makes the order visible in Admin. Moves on
+   * after a short timeout regardless, since the order is paid either way
+   * and the webhook will catch up momentarily. */
+  async function handlePaymentSuccess() {
+    if (!booking) {
+      setStep(5);
+      return;
+    }
+    setFinalizing(true);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const ready = await isOrderReadyAction(booking.orderId);
+      if (ready) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    setFinalizing(false);
+    setStep(5);
   }
 
   return (
@@ -320,7 +357,7 @@ export function BookingWizard({
               </FormField>
 
               <AddressFields address={deliveryAddress} onChange={setDeliveryAddress} />
-              <FormField label="Delivery instructions (optional)">
+              <FormField label="Delivery instructions (recommended)">
                 <textarea
                   rows={2}
                   value={deliveryInstructions}
@@ -524,14 +561,38 @@ export function BookingWizard({
               ${centsToDollarsString(booking.finalAmountCents)} {currency}
             </span>
           </p>
-          <Elements stripe={stripePromise} options={{ clientSecret: booking.clientSecret }}>
-            <PaymentStep
-              onSuccess={() => {
-                void sendBookingConfirmationEmailAction(booking.orderId, booking.manageToken);
-                setStep(5);
-              }}
-            />
-          </Elements>
+
+          <div className="mt-4 space-y-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
+            <div>
+              <p className="font-medium text-[var(--color-text)]">Delivering to</p>
+              <p className="text-[var(--color-muted)]">{booking.resolvedDeliveryAddress}</p>
+              {booking.deliveryAddressLowConfidence && (
+                <AddressConfidenceWarning onEdit={() => void abandonPendingBookingAndGoTo(2)} />
+              )}
+            </div>
+            {booking.resolvedPickupAddress && (
+              <div>
+                <p className="font-medium text-[var(--color-text)]">Picking up from</p>
+                <p className="text-[var(--color-muted)]">{booking.resolvedPickupAddress}</p>
+                {booking.pickupAddressLowConfidence && (
+                  <AddressConfidenceWarning onEdit={() => void abandonPendingBookingAndGoTo(2)} />
+                )}
+              </div>
+            )}
+          </div>
+
+          {finalizing ? (
+            <p className="mt-6 text-sm text-[var(--color-muted)]">Finalizing your booking…</p>
+          ) : (
+            <>
+              <Elements stripe={stripePromise} options={{ clientSecret: booking.clientSecret }}>
+                <PaymentStep onSuccess={() => void handlePaymentSuccess()} />
+              </Elements>
+              <div className="mt-4">
+                <BackButton onClick={() => void abandonPendingBookingAndGoTo(3)} />
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -739,6 +800,18 @@ function NextButton({
     >
       {children}
     </button>
+  );
+}
+
+function AddressConfidenceWarning({ onEdit }: { onEdit: () => void }) {
+  return (
+    <p className="mt-1.5 rounded-lg bg-[var(--color-warning)]/15 px-2.5 py-1.5 text-xs text-[var(--color-warning)]">
+      We couldn't match this to an exact address -- it may be based on a general area rather than
+      your specific house. If this looks wrong, add a house/unit number or more detail.{" "}
+      <button type="button" onClick={onEdit} className="font-medium underline">
+        Edit address
+      </button>
+    </p>
   );
 }
 

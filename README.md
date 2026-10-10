@@ -573,3 +573,85 @@ proxy.ts                          Next.js 16's request interceptor
   never edits one -- a changed tier price or billing cadence creates a
   new Stripe Price and archives the old one. A name-only tier edit does
   not create a new Price.
+
+## Patch 2 (this delivery) -- deferred order creation, address confidence, calendar/orders readability
+
+This is a bug-fix/UX patch on top of Phase 5, not a new phase. Everything
+below builds on the existing codebase, deploy chain, and database -- same
+rule as always: extract over the existing project, push to the same repo,
+redeploy the same Vercel project against the same Neon database.
+
+**Database change -- run `npm run db:push` after extracting this patch.**
+A new `pending_bookings` table was added (additive only, nothing dropped or
+renamed).
+
+### 1. Deferred order creation (fixes "no way to go back" + cluttered Orders)
+
+Previously, starting checkout immediately wrote a real `orders` row with
+status `payment_pending`, even if the customer never paid -- abandoned or
+retried checkouts piled up in Admin -> Orders with no way to remove them,
+and there was no safe way to go back and fix something (like a typo'd
+address) without restarting the whole booking.
+
+Now: a checkout that requires payment stages its full details in a new
+`pending_bookings` table (keyed by the Stripe PaymentIntent id) instead of
+writing to `orders`. **Nothing appears in Admin -> Orders until payment
+actually succeeds.** The Stripe webhook
+(`app/api/stripe/webhook/route.ts`) is the one place that promotes a
+staged booking into a real, paid order, the moment `payment_intent.
+succeeded` fires -- this is also now where the booking confirmation email
+is sent from (previously sent from the booking page itself). A staged
+booking that's abandoned (never paid) is cleaned up automatically after 2
+hours; no scheduled job needed.
+
+The one exception: a gift card that covers 100% of the total has no
+PaymentIntent/webhook at all, so that order is still written directly and
+marked paid immediately, exactly as before.
+
+**New: a working Back button on the payment step.** Clicking it cancels
+the staged booking + its PaymentIntent and returns to the review step, so
+the customer can fix something and submit again -- their old PaymentIntent
+is cancelled, not reused.
+
+### 2. Address confidence + confirmation (fixes the rural/ambiguous-address bug)
+
+The OpenRouteService provider was kept (no credit card required for its
+free tier, unlike Google Maps Platform) -- the ambiguous-address problem
+(e.g. "Township Road 444" with no house number resolving to the wrong
+point along a long rural road) is instead addressed with:
+
+* `lib/routing.ts` now reads Pelias's own confidence signals
+  (`confidence`, `accuracy`, `match_type`) from the geocoding response and
+  exposes `isLowConfidenceGeocode()`.
+* The payment step now shows the customer **exactly which address we
+  resolved their input to**, for both delivery and pickup. If the match
+  looks ambiguous (a centroid/fallback match, or low confidence), a
+  warning appears with an "Edit address" link that cancels the staged
+  booking and sends them back to fix it -- before anything is charged.
+
+This doesn't eliminate every possible mismatch (a vague address can still
+resolve somewhere technically "confident" but wrong), but it surfaces the
+cases most likely to be wrong and gives the customer a chance to catch it
+before paying, which the OpenRouteService-only setup never did before.
+
+### 3. Admin Orders list readability
+
+* Order numbers are now shown as a short `#NNNNNN` (the distinguishing
+  trailing segment) instead of the full `TM-YYYYMMDD-NNNNNN` string -- hover
+  the link to see the full order number, which is still shown in full on
+  the order detail page and in emails.
+* Added a **Placed** column (when the order was actually created), so it's
+  easy to see how recent an order is at a glance.
+
+### 4. Admin Calendar contrast
+
+Delivery/pickup/blocked chips now use solid background colors with white
+text (instead of low-opacity tinted backgrounds), date numbers and the
+weekday header use the full-contrast text color instead of the muted one,
+day cells have a visible border, and a small color-key legend was added
+below the grid. This should read clearly regardless of which custom brand
+colors are set in Business Settings.
+
+**No new environment variables for this patch.** Same npm install/tsc
+sandbox limitation as every prior phase in this environment -- verified by
+careful manual re-read of every changed file rather than a local build.

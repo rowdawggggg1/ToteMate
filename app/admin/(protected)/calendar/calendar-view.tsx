@@ -99,7 +99,7 @@ export function CalendarView({
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
           <div
             key={d}
-            className="bg-[var(--color-surface)] px-2 py-1.5 text-center font-medium text-[var(--color-muted)]"
+            className="bg-[var(--color-surface)] px-2 py-1.5 text-center font-semibold text-[var(--color-text)]"
           >
             {d}
           </div>
@@ -121,8 +121,8 @@ export function CalendarView({
               }}
               onDragLeave={() => setDragOverDate((d) => (d === date ? null : d))}
               onDrop={(e) => handleDrop(e, date)}
-              className={`min-h-[6rem] bg-[var(--color-surface)] p-1.5 ${
-                inCurrentMonth ? "" : "opacity-40"
+              className={`min-h-[6rem] border border-[var(--color-border)] bg-[var(--color-surface)] p-1.5 ${
+                inCurrentMonth ? "" : "bg-[var(--color-background)] opacity-60"
               } ${isDragOver ? "ring-2 ring-inset ring-[var(--color-primary)]" : ""}`}
             >
               <div className="flex items-center justify-between">
@@ -130,7 +130,7 @@ export function CalendarView({
                   className={
                     isToday
                       ? "inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--color-primary)] text-[11px] font-semibold text-white"
-                      : "text-[var(--color-muted)]"
+                      : "text-sm font-medium text-[var(--color-text)]"
                   }
                 >
                   {Number(date.slice(8, 10))}
@@ -140,7 +140,7 @@ export function CalendarView({
               {blocked && (
                 <div
                   title={blocked.reason ?? "Blocked"}
-                  className="mt-1 truncate rounded bg-[var(--color-error)]/15 px-1 py-0.5 text-[10px] font-medium text-[var(--color-error)]"
+                  className="mt-1 truncate rounded border border-[var(--color-error)] bg-[var(--color-error)] px-1 py-0.5 text-[11px] font-semibold text-white"
                 >
                   Blocked{blocked.reason ? `: ${blocked.reason}` : ""}
                 </div>
@@ -160,10 +160,8 @@ export function CalendarView({
                       e.dataTransfer.setData("text/plain", job.orderId);
                     }}
                     title={`${job.customerName} -- ${job.orderNumber}`}
-                    className={`block truncate rounded px-1 py-0.5 text-[10px] font-medium ${
-                      job.kind === "delivery"
-                        ? "bg-[var(--color-primary)]/15 text-[var(--color-primary)]"
-                        : "bg-[var(--color-accent)]/20 text-[var(--color-accent)]"
+                    className={`block truncate rounded px-1 py-0.5 text-[11px] font-semibold text-white shadow-sm ${
+                      job.kind === "delivery" ? "bg-[var(--color-primary)]" : "bg-[var(--color-accent)]"
                     } ${job.draggable ? "cursor-grab" : "cursor-pointer"}`}
                   >
                     {job.kind === "delivery" ? "Deliver" : "Pick up"}: {job.customerName}
@@ -173,6 +171,18 @@ export function CalendarView({
             </div>
           );
         })}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text)]">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-[var(--color-primary)]" /> Delivery
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-[var(--color-accent)]" /> Pickup
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-sm bg-[var(--color-error)]" /> Blocked
+        </span>
       </div>
     </div>
   );

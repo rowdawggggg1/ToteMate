@@ -20,6 +20,25 @@ const STATUS_STYLES: Record<string, string> = {
   refunded: "bg-[var(--color-muted)]/15 text-[var(--color-muted)]",
 };
 
+/**
+ * Order numbers are "TM-YYYYMMDD-NNNNNN" -- useful in full on the order
+ * detail page and in emails, but too wide for a table column. The trailing
+ * 6-digit random segment is what's actually distinct between orders placed
+ * the same day, so that's what's shown here; the full number is still in
+ * the link's title attribute (hover) and on the detail page itself.
+ */
+function shortOrderNumber(orderNumber: string): string {
+  const parts = orderNumber.split("-");
+  return parts.length === 3 ? `#${parts[2]}` : orderNumber;
+}
+
+function formatPlacedAt(createdAt: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(createdAt);
+}
+
 export default async function OrdersPage() {
   const db = getDb();
   const rows = await db.select().from(orders).orderBy(desc(orders.createdAt)).limit(200);
@@ -27,7 +46,10 @@ export default async function OrdersPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold text-[var(--color-text)]">Orders</h1>
-      <p className="mt-1 text-sm text-[var(--color-muted)]">Most recent 200 orders.</p>
+      <p className="mt-1 text-sm text-[var(--color-muted)]">
+        Most recent 200 orders. Only paid/confirmed bookings appear here -- a checkout that's
+        abandoned before payment never shows up.
+      </p>
 
       {rows.length === 0 ? (
         <p className="mt-8 text-sm text-[var(--color-muted)]">No orders yet.</p>
@@ -37,6 +59,7 @@ export default async function OrdersPage() {
             <thead>
               <tr className="border-b border-[var(--color-border)] text-xs uppercase tracking-wide text-[var(--color-muted)]">
                 <th className="px-4 py-3 font-medium">Order</th>
+                <th className="px-4 py-3 font-medium">Placed</th>
                 <th className="px-4 py-3 font-medium">Customer</th>
                 <th className="px-4 py-3 font-medium">Package</th>
                 <th className="px-4 py-3 font-medium">Delivery</th>
@@ -50,10 +73,14 @@ export default async function OrdersPage() {
                   <td className="px-4 py-3">
                     <Link
                       href={`/admin/orders/${order.id}`}
+                      title={order.orderNumber}
                       className="font-medium text-[var(--color-text)] hover:underline"
                     >
-                      {order.orderNumber}
+                      {shortOrderNumber(order.orderNumber)}
                     </Link>
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-[var(--color-muted)]">
+                    {formatPlacedAt(order.createdAt)}
                   </td>
                   <td className="px-4 py-3 text-[var(--color-muted)]">{order.customerName}</td>
                   <td className="px-4 py-3 text-[var(--color-muted)]">{order.packageName}</td>
