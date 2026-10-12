@@ -55,7 +55,10 @@ export default async function AdminSettingsPage() {
     lateFeePerToteDay: s ? centsToDollarsString(s.lateFeeCentsPerToteDay) : "0.00",
     damagedToteFee: s ? centsToDollarsString(s.damagedToteFeeCents) : "0.00",
     lostToteFee: s ? centsToDollarsString(s.lostToteFeeCents) : "0.00",
+    damagedDollyFee: s ? centsToDollarsString(s.damagedDollyFeeCents) : "0.00",
+    lostDollyFee: s ? centsToDollarsString(s.lostDollyFeeCents) : "0.00",
     bookingPaused: s?.bookingPaused ?? false,
+    reviewAutoRequestEnabled: s?.reviewAutoRequestEnabled ?? true,
   };
 
   return (

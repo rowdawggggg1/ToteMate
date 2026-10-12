@@ -21,6 +21,9 @@ const settingsSchema = z.object({
   refereeDiscountEnabled: z.coerce.boolean(),
   refereeDiscountType: z.enum(["fixed", "percentage"]),
   refereeDiscountValue: z.coerce.number().min(0),
+  refereeDiscountRealtorEnabled: z.coerce.boolean(),
+  refereeDiscountRealtorType: z.enum(["fixed", "percentage"]),
+  refereeDiscountRealtorValue: z.coerce.number().min(0),
   realtorsEarnReferrerReward: z.coerce.boolean(),
 });
 
@@ -36,6 +39,9 @@ export async function updateReferralSettingsAction(
     refereeDiscountEnabled: formData.get("refereeDiscountEnabled"),
     refereeDiscountType: formData.get("refereeDiscountType"),
     refereeDiscountValue: formData.get("refereeDiscountValue"),
+    refereeDiscountRealtorEnabled: formData.get("refereeDiscountRealtorEnabled"),
+    refereeDiscountRealtorType: formData.get("refereeDiscountRealtorType"),
+    refereeDiscountRealtorValue: formData.get("refereeDiscountRealtorValue"),
     realtorsEarnReferrerReward: formData.get("realtorsEarnReferrerReward"),
   });
 
@@ -63,6 +69,12 @@ export async function updateReferralSettingsAction(
       data.refereeDiscountType === "fixed" ? dollarsToCents(data.refereeDiscountValue) : 0,
     referralRefereeDiscountPercentage:
       data.refereeDiscountType === "percentage" ? data.refereeDiscountValue.toFixed(2) : "0",
+    referralRefereeDiscountRealtorEnabled: data.refereeDiscountRealtorEnabled,
+    referralRefereeDiscountRealtorType: data.refereeDiscountRealtorType,
+    referralRefereeDiscountRealtorValueCents:
+      data.refereeDiscountRealtorType === "fixed" ? dollarsToCents(data.refereeDiscountRealtorValue) : 0,
+    referralRefereeDiscountRealtorPercentage:
+      data.refereeDiscountRealtorType === "percentage" ? data.refereeDiscountRealtorValue.toFixed(2) : "0",
     referralRealtorsEarnReferrerReward: data.realtorsEarnReferrerReward,
     updatedAt: new Date(),
   };

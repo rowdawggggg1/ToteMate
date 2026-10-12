@@ -1,8 +1,15 @@
 import Link from "next/link";
-import { desc } from "drizzle-orm";
+import { desc, notInArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { orders } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
+
+/** Cancelled/refunded orders are never deleted (full history is kept
+ * deliberately -- see adminCancelOrderAction), but they'd otherwise clutter
+ * the default list with dead rows, including old pre-existing test/clutter
+ * orders the owner wants cleaned up. Hidden by default; ?showCancelled=1
+ * brings them back. */
+const HIDDEN_BY_DEFAULT_STATUSES = ["cancelled", "refunded"];
 
 export const dynamic = "force-dynamic";
 
@@ -39,16 +46,47 @@ function formatPlacedAt(createdAt: Date): string {
   }).format(createdAt);
 }
 
-export default async function OrdersPage() {
+export default async function OrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ showCancelled?: string }>;
+}) {
+  const { showCancelled } = await searchParams;
+  const includeCancelled = showCancelled === "1";
+
   const db = getDb();
-  const rows = await db.select().from(orders).orderBy(desc(orders.createdAt)).limit(200);
+  const rows = includeCancelled
+    ? await db.select().from(orders).orderBy(desc(orders.createdAt)).limit(200)
+    : await db
+        .select()
+        .from(orders)
+        .where(notInArray(orders.status, HIDDEN_BY_DEFAULT_STATUSES))
+        .orderBy(desc(orders.createdAt))
+        .limit(200);
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-[var(--color-text)]">Orders</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold text-[var(--color-text)]">Orders</h1>
+        <div className="flex items-center gap-4">
+          <Link
+            href={includeCancelled ? "/admin/orders" : "/admin/orders?showCancelled=1"}
+            className="text-sm text-[var(--color-primary)] hover:underline"
+          >
+            {includeCancelled ? "Hide cancelled/refunded" : "Show cancelled/refunded"}
+          </Link>
+          <Link
+            href="/admin/orders/new"
+            className="rounded-lg bg-[var(--color-primary)] px-4 py-2 text-sm font-medium text-white"
+          >
+            + New Order
+          </Link>
+        </div>
+      </div>
       <p className="mt-1 text-sm text-[var(--color-muted)]">
         Most recent 200 orders. Only paid/confirmed bookings appear here -- a checkout that's
         abandoned before payment never shows up.
+        {!includeCancelled && " Cancelled and refunded orders are hidden by default."}
       </p>
 
       {rows.length === 0 ? (

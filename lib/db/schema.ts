@@ -186,8 +186,22 @@ export const businessSettings = pgTable("business_settings", {
     .default(0),
   damagedToteFeeCents: integer("damaged_tote_fee_cents").notNull().default(0),
   lostToteFeeCents: integer("lost_tote_fee_cents").notNull().default(0),
+  // Same idea as the tote fees above, but for the dolly that ships with a
+  // package (packages.includesDolly) -- a separate physical item with its
+  // own replacement cost. Used only as a prefill suggestion on the Order
+  // Fees form (see app/admin/(protected)/orders/actions.ts) -- the admin
+  // can always type a different amount.
+  damagedDollyFeeCents: integer("damaged_dolly_fee_cents").notNull().default(0),
+  lostDollyFeeCents: integer("lost_dolly_fee_cents").notNull().default(0),
 
   bookingPaused: boolean("booking_paused").notNull().default(false),
+
+  // --- Patch 4: reviews ---
+  // Whether a review-request email goes out automatically when an order is
+  // marked completed (see markCompletedAction). Off doesn't disable
+  // reviews entirely -- the admin can always send one manually from the
+  // order page; this only controls the automatic send.
+  reviewAutoRequestEnabled: boolean("review_auto_request_enabled").notNull().default(true),
 
   // --- Phase 5: referral program settings ---
   // The referrer (code owner) reward is NOT a toggle -- per the locked
@@ -232,6 +246,27 @@ export const businessSettings = pgTable("business_settings", {
   referralRealtorsEarnReferrerReward: boolean("referral_realtors_earn_referrer_reward")
     .notNull()
     .default(false),
+  // Patch 4: a SECOND, independent referee-discount setting specifically
+  // for codes owned by a realtor (referralCodes.ownerType = "realtor"),
+  // separate from referralRefereeDiscount* above (which now applies only
+  // to a regular customer's own code). This lets the owner give a
+  // realtor's referred customers a discount without necessarily giving
+  // one for ordinary customer-to-customer referrals, or vice versa.
+  referralRefereeDiscountRealtorEnabled: boolean("referral_referee_discount_realtor_enabled")
+    .notNull()
+    .default(false),
+  referralRefereeDiscountRealtorType: text("referral_referee_discount_realtor_type")
+    .notNull()
+    .default("fixed"),
+  referralRefereeDiscountRealtorValueCents: integer("referral_referee_discount_realtor_value_cents")
+    .notNull()
+    .default(0),
+  referralRefereeDiscountRealtorPercentage: numeric("referral_referee_discount_realtor_percentage", {
+    precision: 5,
+    scale: 2,
+  })
+    .notNull()
+    .default("0"),
 
   // Doubles as the first-run setup mutex: NULL until the initial admin
   // account has been successfully created (see app/setup/actions.ts).
@@ -559,6 +594,19 @@ export const orders = pgTable("orders", {
   cancellationReason: text("cancellation_reason"),
   cancellationFeeCents: integer("cancellation_fee_cents"),
 
+  // --- Patch 4: review request (the actual review, once submitted, lives
+  // in its own `reviews` row -- see that table below). Same opaque-token
+  // pattern as manageTokenHash: only the hash is stored, the raw token
+  // only ever lives in the request email's link. reviewRequestedAt is set
+  // every time a request is (re)sent, whether automatic (on completion,
+  // if businessSettings.reviewAutoRequestEnabled) or a manual resend from
+  // the order page -- reviewSubmittedAt is set once, the first (and only)
+  // time the customer actually submits one, and blocks the token from
+  // being used again. ---
+  reviewTokenHash: text("review_token_hash").unique(),
+  reviewRequestedAt: timestamp("review_requested_at", { withTimezone: true }),
+  reviewSubmittedAt: timestamp("review_submitted_at", { withTimezone: true }),
+
   // --- Notes ---
   internalNotes: text("internal_notes"),
 
@@ -618,12 +666,105 @@ export const orderLateFees = pgTable("order_late_fees", {
     .references(() => orders.id, { onDelete: "cascade" }),
   amountCents: integer("amount_cents").notNull(),
   reason: text("reason"),
+  // Patch 4: this table now backs a general "Order Fees" admin UI, not
+  // just late fees -- "late" | "damaged_tote" | "lost_tote" |
+  // "damaged_dolly" | "lost_dolly" | "other". Defaulted to "late" so every
+  // existing row (and the table/column names themselves, left unchanged
+  // to avoid a destructive rename) keeps meaning exactly what it always
+  // did.
+  feeType: text("fee_type").notNull().default("late"),
   // "recorded" | "charged" | "charge_failed"
   status: text("status").notNull().default("recorded"),
   stripePaymentIntentId: text("stripe_payment_intent_id"),
   chargeFailureMessage: text("charge_failure_message"),
   chargedAt: timestamp("charged_at", { withTimezone: true }),
   createdByAdminId: uuid("created_by_admin_id").references(() => admins.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Patch 4: a rental extended AFTER the order was already booked (or even
+ * already delivered) -- different from the weekly-extension add-on chosen
+ * DURING checkout (orders.extensionWeeks/weeklyExtensionPriceCents, which
+ * is frozen at booking time). Always priced at that same order's locked
+ * weekly rate (weeklyExtensionPriceCents) -- an order whose package never
+ * offered a weekly extension can't be extended this way. Follows the
+ * exact same "always recorded immediately, charged on-demand" pattern as
+ * orderLateFees: adding one here always moves confirmedPickupDate out
+ * right away (after re-checking tote availability through the new
+ * window), but charging the saved card for it is a separate, explicit
+ * admin action.
+ */
+export const orderExtensions = pgTable("order_extensions", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderId: uuid("order_id")
+    .notNull()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  weeks: integer("weeks").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  previousPickupDate: date("previous_pickup_date").notNull(),
+  newPickupDate: date("new_pickup_date").notNull(),
+  // "recorded" | "charged" | "charge_failed"
+  status: text("status").notNull().default("recorded"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  chargeFailureMessage: text("charge_failure_message"),
+  chargedAt: timestamp("charged_at", { withTimezone: true }),
+  createdByAdminId: uuid("created_by_admin_id").references(() => admins.id),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Patch 4: a customer's review of a completed order. One per order
+ * (`orderId` unique) -- the token that gates submission lives on the order
+ * itself (orders.reviewTokenHash), not here, since a review row only ever
+ * gets created once a review is actually submitted (see
+ * submitReview in lib/reviews.ts).
+ *
+ * Moderation is a two-stage thing, matching the owner's own description:
+ *  - `status` ("pending" | "approved" | "rejected") is the actual
+ *    moderation decision -- every new review starts "pending" and sits in
+ *    the Admin -> Reviews queue until the owner approves or rejects it.
+ *  - `isPublic` is a separate, independent toggle (same idea as a FAQ's
+ *    isActive) for whether an APPROVED review is currently shown on the
+ *    public site -- so the owner can pull a review back out of public view
+ *    later without having to "un-approve" it. A rejected review is never
+ *    shown regardless of isPublic.
+ * The public homepage's aggregate rating/count (like a Google reviews
+ * summary) only ever counts status "approved" AND isPublic reviews -- see
+ * getPublicReviewSummary in lib/reviews.ts.
+ */
+export const reviews = pgTable("reviews", {
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  orderId: uuid("order_id")
+    .notNull()
+    .unique()
+    .references(() => orders.id, { onDelete: "cascade" }),
+  // Null/blank whenever isAnonymous is true -- the customer's name is
+  // simply never stored on the review in that case, not just hidden on
+  // display.
+  customerName: text("customer_name"),
+  isAnonymous: boolean("is_anonymous").notNull().default(false),
+  rating: integer("rating").notNull(),
+  comment: text("comment"),
+  // "pending" | "approved" | "rejected"
+  status: text("status").notNull().default("pending"),
+  isPublic: boolean("is_public").notNull().default(true),
+  moderatedAt: timestamp("moderated_at", { withTimezone: true }),
+  moderatedByAdminId: uuid("moderated_by_admin_id").references(() => admins.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -140,6 +140,8 @@ export default async function BookPage({
             content: activeAgreement.content,
           }}
           stripePublishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? ""}
+          contactEmail={settings.contactEmail}
+          contactPhone={settings.contactPhone}
         />
       </main>
       <SiteFooter

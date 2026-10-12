@@ -61,11 +61,21 @@ export function CalendarView({
   function handleDrop(e: React.DragEvent, date: string) {
     e.preventDefault();
     setDragOverDate(null);
-    const orderId = e.dataTransfer.getData("text/plain");
-    if (!orderId) return;
+    const raw = e.dataTransfer.getData("text/plain");
+    if (!raw) return;
+    let orderId: string;
+    let kind: "delivery" | "pickup";
+    try {
+      const parsed = JSON.parse(raw);
+      orderId = parsed.orderId;
+      kind = parsed.kind;
+    } catch {
+      return;
+    }
+    if (!orderId || (kind !== "delivery" && kind !== "pickup")) return;
     setError(null);
     startTransition(async () => {
-      const result = await adminRescheduleOrderAction(orderId, date);
+      const result = await adminRescheduleOrderAction(orderId, kind, date);
       if (!result.ok) {
         setError(result.error ?? "Couldn't reschedule that order.");
         return;
@@ -157,7 +167,10 @@ export function CalendarView({
                         e.preventDefault();
                         return;
                       }
-                      e.dataTransfer.setData("text/plain", job.orderId);
+                      e.dataTransfer.setData(
+                        "text/plain",
+                        JSON.stringify({ orderId: job.orderId, kind: job.kind })
+                      );
                     }}
                     title={`${job.customerName} -- ${job.orderNumber}`}
                     className={`block truncate rounded px-1 py-0.5 text-[11px] font-semibold text-white shadow-sm ${

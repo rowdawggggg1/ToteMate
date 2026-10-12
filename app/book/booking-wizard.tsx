@@ -69,6 +69,8 @@ export function BookingWizard({
   addOns,
   agreement,
   stripePublishableKey,
+  contactEmail,
+  contactPhone,
 }: {
   businessName: string;
   currency: string;
@@ -78,6 +80,8 @@ export function BookingWizard({
   addOns: AddOnOption[];
   agreement: AgreementInfo;
   stripePublishableKey: string;
+  contactEmail?: string | null;
+  contactPhone?: string | null;
 }) {
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
 
@@ -369,6 +373,24 @@ export function BookingWizard({
                 Addresses farther from us may be subject to a delivery and/or pickup fee based on
                 distance -- this is calculated automatically and shown before you pay.
               </p>
+              {(contactEmail || contactPhone) && (
+                <p className="text-xs text-[var(--color-muted)]">
+                  Having trouble entering your address, or not sure it&apos;s coming out right?
+                  Feel free to{" "}
+                  {contactEmail && (
+                    <a href={`mailto:${contactEmail}`} className="font-medium text-[var(--color-primary)] hover:underline">
+                      email us
+                    </a>
+                  )}
+                  {contactEmail && contactPhone && " or "}
+                  {contactPhone && (
+                    <a href={`sms:${contactPhone}`} className="font-medium text-[var(--color-primary)] hover:underline">
+                      text us
+                    </a>
+                  )}{" "}
+                  and we&apos;ll help you get it sorted.
+                </p>
+              )}
             </div>
           </div>
 

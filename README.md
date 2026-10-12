@@ -655,3 +655,148 @@ colors are set in Business Settings.
 **No new environment variables for this patch.** Same npm install/tsc
 sandbox limitation as every prior phase in this environment -- verified by
 careful manual re-read of every changed file rather than a local build.
+
+## Patch 3 (this delivery) -- independent delivery/pickup drag on the Admin calendar
+
+Dragging a delivery chip to a new day used to also shift the pickup date by
+the same amount (to preserve the rental duration) -- fine for a customer's
+own self-service reschedule, but not what you want as the owner moving jobs
+around for logistics reasons (e.g. delivering a day early as a courtesy
+while still picking up on the originally-promised day, or pushing pickup
+back a day).
+
+Now, on the Admin calendar, delivery and pickup chips move **independently**:
+dragging a delivery chip only changes the delivery date (pickup stays put),
+and pickup chips are now draggable too (only before the order has been
+delivered), moving just the pickup date. Blocked dates, daily capacity, and
+tote-inventory limits are still fully checked either way. The
+customer-facing Manage My Booking reschedule is unchanged -- it still moves
+both dates together, since that's what preserves what the customer actually
+paid for.
+
+No schema change, no new environment variables.
+
+## Patch 4 (this delivery) -- order fees generalized, realtor referee discount, admin cancellation, rental extensions, custom orders
+
+Seven changes, all additive (run `npm run db:push` after deploying this patch):
+
+**1. Order fees generalized beyond "late fees."** The old Late Fees section
+on an order is now "Fees," covering late returns, damaged/lost totes, and
+new damaged/lost dolly fees (configurable default amounts on the Settings
+page, alongside the existing tote fees). Same always-recorded,
+charged-on-demand pattern as before -- adding a fee never auto-charges the
+card on file; charging it is always a separate, explicit click. Schema: the
+`order_late_fees` table (left named as-is to avoid a destructive rename)
+gained a `fee_type` column, defaulted to `"late"` so every existing row
+keeps its original meaning. `addLateFeeAction`/`chargeLateFeeAction` are
+now `addOrderFeeAction`/`chargeOrderFeeAction`.
+
+**2. Realtor-owned referral codes can have their own referee discount.**
+Business Settings -> Referral Program now has separate "Referee discount"
+sections for ordinary customer codes vs. realtor-owned codes, so a realtor's
+own code can give their referrals a different discount than a regular
+customer's code does. New `business_settings` columns:
+`referral_referee_discount_realtor_enabled/type/value_cents/percentage`.
+
+**3. Admin order cancellation.** Any order not already in a dead-end status
+(draft, payment pending/failed, scheduled, or delivered) can now be
+cancelled directly from its detail page -- separate from the customer's own
+self-service cancel, and broader in scope so it also works for cleaning up
+old test/clutter orders. The admin can let the automatic cancellation-fee
+rule calculate the refund, or type in a manual override amount. Cancelling
+never deletes the order -- it's just how an order leaves the default Orders
+list (see #5). No schema change -- reuses the existing `cancelled_at` /
+`cancellation_reason` / `cancellation_fee_cents` / `refunded_amount_cents`
+columns.
+
+**4. Rental extensions after booking (or after delivery).** If a customer
+decides mid-rental they need the totes longer, an order's detail page now
+has an "Rental extensions" section: pick extra weeks, and it's added
+on to the *same* order (not a separate one) at that order's own locked
+weekly-extension rate, immediately pushing the pickup date out -- after
+re-checking that the fleet can actually support the longer window (blocked
+dates / daily capacity / tote inventory), so it never silently overbooks.
+Same always-recorded/charge-on-demand pattern as fees. New table:
+`order_extensions` (weeks, amount, previous/new pickup date, status,
+Stripe fields, mirroring `order_late_fees`'s shape).
+
+**5. Cancelled/refunded orders hidden by default.** The Orders list now
+hides `cancelled` and `refunded` orders by default (a "Show
+cancelled/refunded" link brings them back) -- so #3 can also be used to
+clear out old clutter without it piling up in the default view forever.
+
+**6. Admin-created custom orders.** Orders -> "+ New Order" lets you create
+a booking yourself for a phone call, email, or walk-in customer: pick an
+existing package, dates, addresses, and enter the delivery/pickup fee
+directly (no ORS geocoding for a custom order -- type what you want to
+charge). Unlike the public booking flow, there's no minimum-lead-time rule
+and no signed rental agreement required (note how you handled that in the
+order's internal notes if relevant) -- but blocked dates, daily capacity,
+and tote inventory are still fully checked. You choose per order how
+payment works:
+  - **Mark as paid now** -- for cash/e-transfer/etc. collected outside the
+    app; the order is created already paid and scheduled.
+  - **Send a Stripe payment link** -- the order is created right away as
+    "payment pending" (showing in the Orders list, holding its spot in the
+    schedule), and you get a Stripe Checkout link to text/email the
+    customer. A "Payment link" section on the order page lets you
+    regenerate the link if needed. Once paid, the Stripe webhook marks the
+    order paid/scheduled automatically and saves the card on file (so a
+    later fee/extension can still be charged on-demand, same as any other
+    order).
+
+No schema change for #6 itself (reuses `orders` as-is) -- it's really
+schema changes #1/#2/#4 above plus the new `/admin/orders/new` page and a
+new Checkout-session purpose (`custom_order_payment`) handled in the Stripe
+webhook.
+
+**7. Reviews.** A customer can leave a 1-5 star rating + optional comment
+(with an optional "post anonymously" checkbox) for a completed order:
+
+  - **Requesting a review.** A review-request email (with a one-time,
+    tokenized link to `/review/[orderId]`, the same opaque-token pattern as
+    "Manage My Booking") goes out automatically when an order is marked
+    completed, *unless* you turn that off under Business Settings ->
+    Reviews ("Automatically email a review request..."). Whether that's on
+    or off, you can always send or resend one manually from an order's page
+    (shows up once the order is picked up or completed) -- useful for
+    requesting a review on an older order, or resending a lost link. Only
+    one review per order; once submitted, the link stops working.
+  - **Moderation.** Every submitted review starts as "pending" in
+    Admin -> Reviews. You approve or reject each one -- a rejected review
+    is never shown publicly. Separately, an *approved* review has its own
+    "Show on public site" / "Hide from public site" toggle (same idea as a
+    FAQ's active/inactive toggle), so you can pull a review out of public
+    view later without re-doing the approval. Reviews can also be deleted
+    outright.
+  - **Public display.** The homepage shows a Google-reviews-style summary
+    ("4.8 out of 5 (23 reviews)") plus a grid of review cards -- built only
+    from reviews that are both approved AND currently toggled public. The
+    section is simply omitted if there are no public reviews yet.
+
+New `reviews` table (one row per submitted review: rating, comment,
+customer name/anonymous flag, moderation status, public toggle). New
+columns on `orders` (`review_token_hash`, `review_requested_at`,
+`review_submitted_at`) and on `business_settings`
+(`review_auto_request_enabled`).
+
+**8. Build fix.** `app/admin/(protected)/orders/actions.ts` has `"use
+server"` at the top, and Next.js requires every export from a `"use
+server"` file to be an async function -- the `FEE_TYPES` constant (added
+in #1 above) broke `npm run build` with "A 'use server' file can only
+export async functions, found object." Moved `FEE_TYPES` to its own plain
+module, `lib/order-fees.ts` (no `"use server"` directive), imported from
+both the server actions and the fee-form component. Same pattern already
+used for `TOTE_STATUSES` in `app/admin/(protected)/inventory/
+tote-statuses.ts` -- worth remembering for any future shared constant that
+a "use server" file needs.
+
+**9. A reassurance note on the address fields.** The delivery/pickup
+address step on the public booking page now shows a small note under the
+address fields -- "Having trouble entering your address... feel free to
+email us / text us" -- using your Business Settings contact email/phone,
+shown only when at least one is set.
+
+**No new environment variables for this patch.** Same npm install/tsc
+sandbox limitation as every prior phase in this environment -- verified by
+careful manual re-read of every changed file rather than a local build.

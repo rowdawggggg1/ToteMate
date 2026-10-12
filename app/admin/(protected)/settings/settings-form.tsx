@@ -44,7 +44,10 @@ export type SettingsInitialValues = {
   lateFeePerToteDay: string;
   damagedToteFee: string;
   lostToteFee: string;
+  damagedDollyFee: string;
+  lostDollyFee: string;
   bookingPaused: boolean;
+  reviewAutoRequestEnabled: boolean;
 };
 
 const initialState: SettingsActionState = {};
@@ -516,6 +519,34 @@ export function SettingsForm({
             />
           </Field>
         </div>
+        <p className="mt-4 text-xs text-[var(--color-muted)]">
+          These are just prefill suggestions for the "Add Fee" form on an order -- you can always
+          type a different amount there.
+        </p>
+        <div className="mt-2 grid gap-4 sm:grid-cols-2">
+          <Field label="Damaged dolly fee ($)" htmlFor="damagedDollyFee">
+            <input
+              id="damagedDollyFee"
+              name="damagedDollyFee"
+              type="number"
+              step="0.01"
+              min={0}
+              defaultValue={initialValues.damagedDollyFee}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Lost dolly fee ($)" htmlFor="lostDollyFee">
+            <input
+              id="lostDollyFee"
+              name="lostDollyFee"
+              type="number"
+              step="0.01"
+              min={0}
+              defaultValue={initialValues.lostDollyFee}
+              className={inputClass}
+            />
+          </Field>
+        </div>
       </Section>
 
       <Section title="Booking Status">
@@ -525,6 +556,16 @@ export function SettingsForm({
           label="Pause new online bookings"
           defaultChecked={initialValues.bookingPaused}
           hint="Existing bookings are unaffected. Customers will see booking as temporarily unavailable."
+        />
+      </Section>
+
+      <Section title="Reviews">
+        <Checkbox
+          id="reviewAutoRequestEnabled"
+          name="reviewAutoRequestEnabled"
+          label="Automatically email a review request when an order is marked completed"
+          defaultChecked={initialValues.reviewAutoRequestEnabled}
+          hint="You can always send or resend a review request manually from an order's page, whether this is on or off."
         />
       </Section>
 

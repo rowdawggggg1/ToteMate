@@ -106,9 +106,17 @@ export async function POST(request: Request): Promise<NextResponse> {
  */
 async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session): Promise<void> {
   if (session.mode !== "payment") return;
-  if (session.metadata?.purpose !== "gift_card_purchase") return;
   if (session.payment_status !== "paid") return;
 
+  if (session.metadata?.purpose === "gift_card_purchase") {
+    await handleGiftCardCheckoutCompleted(session);
+  } else if (session.metadata?.purpose === "custom_order_payment") {
+    await handleCustomOrderCheckoutCompleted(session);
+  }
+}
+
+async function handleGiftCardCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
+  if (!session.metadata) return;
   const amountCents = Number(session.metadata.amountCents);
   if (!Number.isFinite(amountCents) || amountCents <= 0) return;
 
@@ -132,6 +140,78 @@ async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session):
   });
 
   await sendGiftCardPurchaseEmail(giftCard).catch(() => {});
+}
+
+/**
+ * Patch 4: an admin-created custom order (lib/custom-orders.ts) whose
+ * payment method was "charge via Stripe" -- unlike a public booking, the
+ * `orders` row already exists (as payment_pending) by the time this fires;
+ * this just updates that same row to paid, the same way any other admin
+ * action would, rather than promoting a staged payload. Re-fetches the
+ * PaymentIntent for the customer/payment-method ids so a late fee can be
+ * charged on-demand later, exactly like a normal booking.
+ */
+async function handleCustomOrderCheckoutCompleted(session: Stripe.Checkout.Session): Promise<void> {
+  const orderId = session.metadata?.orderId;
+  if (!orderId) return;
+
+  const db = getDb();
+  const orderRows = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  const order = orderRows[0];
+  if (!order) return;
+  if (order.paymentStatus === "paid") return; // Already handled (idempotency).
+
+  if (session.amount_total !== order.finalAmountCents) {
+    await writeAudit({
+      actor: { type: "system" },
+      action: "ORDER_PAYMENT_AMOUNT_MISMATCH",
+      entityType: "order",
+      entityId: order.id,
+      notes: `Checkout amount_total ${session.amount_total} != order finalAmountCents ${order.finalAmountCents} (order ${order.orderNumber})`,
+    });
+    return; // Needs manual admin attention -- don't mark paid on a mismatch.
+  }
+
+  const stripe = getStripe();
+  let stripeCustomerId: string | null = null;
+  let stripePaymentMethodId: string | null = null;
+  const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
+  if (paymentIntentId) {
+    try {
+      const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      stripeCustomerId = typeof paymentIntent.customer === "string" ? paymentIntent.customer : null;
+      stripePaymentMethodId =
+        typeof paymentIntent.payment_method === "string" ? paymentIntent.payment_method : null;
+    } catch {
+      // Best-effort -- the order still gets marked paid below either way.
+    }
+  }
+
+  await db
+    .update(orders)
+    .set({
+      status: "scheduled",
+      paymentStatus: "paid",
+      paidAt: new Date(),
+      stripePaymentIntentId: paymentIntentId,
+      stripeCustomerId,
+      stripePaymentMethodId,
+      updatedAt: new Date(),
+    })
+    .where(eq(orders.id, order.id));
+
+  await writeAudit({
+    actor: { type: "system" },
+    action: "ORDER_PAID",
+    entityType: "order",
+    entityId: order.id,
+    notes: `Custom order paid via Stripe Checkout session ${session.id}`,
+  });
+
+  const manageToken = session.metadata?.manageToken;
+  if (manageToken) {
+    await sendBookingConfirmationEmail(order, manageToken).catch(() => {});
+  }
 }
 
 /**

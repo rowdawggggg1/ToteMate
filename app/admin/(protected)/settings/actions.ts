@@ -87,8 +87,11 @@ const settingsSchema = z.object({
   lateFeePerToteDay: z.coerce.number().min(0),
   damagedToteFee: z.coerce.number().min(0),
   lostToteFee: z.coerce.number().min(0),
+  damagedDollyFee: z.coerce.number().min(0),
+  lostDollyFee: z.coerce.number().min(0),
 
   bookingPaused: z.coerce.boolean(),
+  reviewAutoRequestEnabled: z.coerce.boolean(),
 });
 
 export type SettingsActionState = {
@@ -143,7 +146,10 @@ export async function updateSettingsAction(
     lateFeePerToteDay: formData.get("lateFeePerToteDay"),
     damagedToteFee: formData.get("damagedToteFee"),
     lostToteFee: formData.get("lostToteFee"),
+    damagedDollyFee: formData.get("damagedDollyFee"),
+    lostDollyFee: formData.get("lostDollyFee"),
     bookingPaused: formData.get("bookingPaused"),
+    reviewAutoRequestEnabled: formData.get("reviewAutoRequestEnabled"),
   });
 
   if (!parsed.success) {
@@ -229,7 +235,10 @@ export async function updateSettingsAction(
     lateFeeCentsPerToteDay: dollarsToCents(data.lateFeePerToteDay),
     damagedToteFeeCents: dollarsToCents(data.damagedToteFee),
     lostToteFeeCents: dollarsToCents(data.lostToteFee),
+    damagedDollyFeeCents: dollarsToCents(data.damagedDollyFee),
+    lostDollyFeeCents: dollarsToCents(data.lostDollyFee),
     bookingPaused: data.bookingPaused,
+    reviewAutoRequestEnabled: data.reviewAutoRequestEnabled,
     updatedAt: new Date(),
   };
 

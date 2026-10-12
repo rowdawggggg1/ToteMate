@@ -61,6 +61,12 @@ export default async function ReferralsPage() {
               settings.referralRefereeDiscountType === "percentage"
                 ? settings.referralRefereeDiscountPercentage
                 : centsToDollarsString(settings.referralRefereeDiscountValueCents),
+            refereeDiscountRealtorEnabled: settings.referralRefereeDiscountRealtorEnabled,
+            refereeDiscountRealtorType: settings.referralRefereeDiscountRealtorType as "fixed" | "percentage",
+            refereeDiscountRealtorValue:
+              settings.referralRefereeDiscountRealtorType === "percentage"
+                ? settings.referralRefereeDiscountRealtorPercentage
+                : centsToDollarsString(settings.referralRefereeDiscountRealtorValueCents),
             realtorsEarnReferrerReward: settings.referralRealtorsEarnReferrerReward,
           }}
         />

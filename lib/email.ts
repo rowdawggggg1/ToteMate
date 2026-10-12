@@ -156,6 +156,26 @@ export async function sendGiftCardPurchaseEmail(
   }
 }
 
+function reviewLink(orderId: string, reviewToken: string): string {
+  return `${baseUrl()}/review/${orderId}?token=${reviewToken}`;
+}
+
+export async function sendReviewRequestEmail(order: OrderRow, reviewToken: string): Promise<void> {
+  const subject = `How was your rental? -- ${order.orderNumber}`;
+  const text = [
+    `Hi ${order.customerName},`,
+    "",
+    `Thanks for renting with us! We'd really appreciate a quick review of your experience.`,
+    "",
+    `Leave a review here:`,
+    reviewLink(order.id, reviewToken),
+    "",
+    "It only takes a minute, and it helps us a lot. Thanks again!",
+  ].join("\n");
+
+  await send(order.customerEmail, subject, text);
+}
+
 export async function sendRescheduleEmail(order: OrderRow): Promise<void> {
   const subject = `Booking updated -- order ${order.orderNumber}`;
   const text = [

@@ -99,11 +99,12 @@ export default async function CalendarPage({
       customerName: o.customerName,
       date: o.confirmedPickupDate,
       kind: "pickup" as const,
-      // Pickup-only dates can't be dragged independently -- rescheduling
-      // shifts delivery + pickup together (see lib/reschedule.ts); an
-      // already-delivered order's pickup date is a different kind of
-      // change (an extension) that this calendar doesn't handle.
-      draggable: false,
+      // Draggable independently of delivery (adminRescheduleOrderDate in
+      // lib/reschedule.ts moves only this one date) -- but only before the
+      // order has actually been delivered. Once delivered, moving "pickup"
+      // is a different kind of change (an extension) this calendar
+      // doesn't handle.
+      draggable: o.status === "scheduled",
     })),
   ];
 
@@ -116,8 +117,8 @@ export default async function CalendarPage({
     <div>
       <h1 className="text-2xl font-semibold text-[var(--color-text)]">Calendar</h1>
       <p className="mt-1 text-sm text-[var(--color-muted)]">
-        Drag a delivery onto a new day to reschedule it (delivery + pickup move together). Pickups
-        and blocked dates are shown for reference and aren't draggable here.
+        Drag a delivery or a pickup chip onto a new day to move just that date -- the other date
+        stays put. Blocked dates are shown for reference and aren't draggable.
       </p>
       <CalendarView
         label={bounds.label}

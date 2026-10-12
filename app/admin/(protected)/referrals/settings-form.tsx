@@ -13,6 +13,9 @@ export type ReferralSettingsInitialValues = {
   refereeDiscountEnabled: boolean;
   refereeDiscountType: "fixed" | "percentage";
   refereeDiscountValue: string;
+  refereeDiscountRealtorEnabled: boolean;
+  refereeDiscountRealtorType: "fixed" | "percentage";
+  refereeDiscountRealtorValue: string;
   realtorsEarnReferrerReward: boolean;
 };
 
@@ -65,9 +68,11 @@ export function ReferralSettingsForm({
       </div>
 
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h3 className="font-medium text-[var(--color-text)]">Referee discount</h3>
+        <h3 className="font-medium text-[var(--color-text)]">Referee discount -- customer codes</h3>
         <p className="mt-1 text-sm text-[var(--color-muted)]">
-          Optional: also give the new customer a discount on their own order for using the code.
+          Optional: also give the new customer a discount on their own order when they use a
+          regular customer's referral code. This is independent of the realtor-code discount
+          below -- you can run one without the other.
         </p>
         <label className="mt-3 flex items-center gap-2 text-sm text-[var(--color-text)]">
           <input
@@ -108,12 +113,57 @@ export function ReferralSettingsForm({
       </div>
 
       <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h3 className="font-medium text-[var(--color-text)]">Realtor codes</h3>
+        <h3 className="font-medium text-[var(--color-text)]">Referee discount -- realtor codes</h3>
+        <p className="mt-1 text-sm text-[var(--color-muted)]">
+          Optional: give a discount to a client who books using a REALTOR's referral code
+          specifically -- separate from the customer-code discount above, so you can offer realtor
+          clients a perk without necessarily running the same promo for everyone.
+        </p>
+        <label className="mt-3 flex items-center gap-2 text-sm text-[var(--color-text)]">
+          <input
+            type="checkbox"
+            name="refereeDiscountRealtorEnabled"
+            defaultChecked={initialValues.refereeDiscountRealtorEnabled}
+          />
+          Give a realtor's referred client a discount
+        </label>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Field label="Discount type" htmlFor="refereeDiscountRealtorType">
+            <select
+              id="refereeDiscountRealtorType"
+              name="refereeDiscountRealtorType"
+              defaultValue={initialValues.refereeDiscountRealtorType}
+              className={inputClass}
+            >
+              <option value="fixed">Fixed $ amount</option>
+              <option value="percentage">Percentage of order</option>
+            </select>
+          </Field>
+          <Field
+            label="Discount value"
+            htmlFor="refereeDiscountRealtorValue"
+            error={errors.refereeDiscountRealtorValue}
+          >
+            <input
+              id="refereeDiscountRealtorValue"
+              name="refereeDiscountRealtorValue"
+              type="number"
+              step="0.01"
+              min="0"
+              defaultValue={initialValues.refereeDiscountRealtorValue}
+              className={inputClass}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <h3 className="font-medium text-[var(--color-text)]">Realtor codes -- referrer reward</h3>
         <p className="mt-1 text-sm text-[var(--color-muted)]">
           Realtors already profit from subscriptions/gift cards, so their own referral code earns
-          them nothing by default -- it just discounts their client's order (if the referee
-          discount above is on). Turn this on later if you want realtors to earn the referrer
-          reward too.
+          THEM nothing by default -- it just discounts their client's order (if the realtor-code
+          discount above is on). Turn this on later if you want realtors to also earn the referrer
+          reward.
         </p>
         <label className="mt-3 flex items-center gap-2 text-sm text-[var(--color-text)]">
           <input

@@ -2,11 +2,16 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { asc, desc, eq, isNull, and } from "drizzle-orm";
 import { getDb } from "@/lib/db";
-import { orderLateFees, orderToteAssignments, orders, totes } from "@/lib/db/schema";
+import { businessSettings, orderExtensions, orderLateFees, orderToteAssignments, orders, totes } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
 import { OrderDetailClient } from "../order-detail-client";
 import { PriceOverrideForm } from "../price-override-form";
-import { LateFeesSection } from "../late-fees-section";
+import { OrderFeesSection, type FeeDefaults } from "../late-fees-section";
+import { OrderExtensionsSection } from "../order-extensions-section";
+import { CancelOrderSection } from "../cancel-order-section";
+import { PaymentLinkSection } from "../payment-link-section";
+import { ReviewRequestSection } from "../review-request-section";
+import { canRequestReview } from "@/lib/reviews";
 import { updateOrderNotesAction } from "../actions";
 import { Field, inputClass } from "@/components/ui/field";
 import { SubmitButton } from "@/components/ui/submit-button";
@@ -48,6 +53,31 @@ export default async function OrderDetailPage({
     .from(orderLateFees)
     .where(eq(orderLateFees.orderId, order.id))
     .orderBy(desc(orderLateFees.createdAt));
+
+  const extensionRows = await db
+    .select()
+    .from(orderExtensions)
+    .where(eq(orderExtensions.orderId, order.id))
+    .orderBy(desc(orderExtensions.createdAt));
+
+  const settingsRows = await db
+    .select()
+    .from(businessSettings)
+    .where(eq(businessSettings.id, 1))
+    .limit(1);
+  const settings = settingsRows[0];
+  const feeDefaults: FeeDefaults = settings
+    ? {
+        late: settings.lateFeeCentsPerToteDay || undefined,
+        damaged_tote: settings.damagedToteFeeCents || undefined,
+        lost_tote: settings.lostToteFeeCents || undefined,
+        damaged_dolly: settings.damagedDollyFeeCents || undefined,
+        lost_dolly: settings.lostDollyFeeCents || undefined,
+      }
+    : {};
+
+  const EXTENDABLE_STATUSES = ["scheduled", "delivered"];
+  const ADMIN_CANCELLABLE_STATUSES = ["draft", "payment_pending", "payment_failed", "scheduled", "delivered"];
 
   const addOns = Array.isArray(order.addOns)
     ? (order.addOns as Array<{ name: string; priceCents: number; quantity: number }>)
@@ -138,6 +168,13 @@ export default async function OrderDetailPage({
         </div>
       </section>
 
+      {order.paymentStatus === "pending" && (
+        <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+          <h2 className="mb-3 font-medium text-[var(--color-text)]">Payment link</h2>
+          <PaymentLinkSection orderId={order.id} />
+        </section>
+      )}
+
       <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
         <h2 className="mb-3 font-medium text-[var(--color-text)]">Manage order</h2>
         <OrderDetailClient
@@ -161,18 +198,60 @@ export default async function OrderDetailPage({
       </section>
 
       <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <h2 className="mb-3 font-medium text-[var(--color-text)]">Late fees</h2>
-        <LateFeesSection
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">Fees</h2>
+        <OrderFeesSection
           orderId={order.id}
           fees={lateFeeRows.map((f) => ({
             id: f.id,
             amountCents: f.amountCents,
             reason: f.reason,
             status: f.status,
+            feeType: f.feeType,
             chargeFailureMessage: f.chargeFailureMessage,
             createdAt: f.createdAt.toISOString(),
           }))}
           hasCardOnFile={Boolean(order.stripeCustomerId && order.stripePaymentMethodId)}
+          feeDefaults={feeDefaults}
+        />
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">Rental extensions</h2>
+        <OrderExtensionsSection
+          orderId={order.id}
+          extensions={extensionRows.map((e) => ({
+            id: e.id,
+            weeks: e.weeks,
+            amountCents: e.amountCents,
+            previousPickupDate: e.previousPickupDate,
+            newPickupDate: e.newPickupDate,
+            status: e.status,
+            chargeFailureMessage: e.chargeFailureMessage,
+            createdAt: e.createdAt.toISOString(),
+          }))}
+          hasCardOnFile={Boolean(order.stripeCustomerId && order.stripePaymentMethodId)}
+          canExtend={EXTENDABLE_STATUSES.includes(order.status)}
+          weeklyExtensionPriceCents={order.weeklyExtensionPriceCents}
+        />
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">Review</h2>
+        <ReviewRequestSection
+          orderId={order.id}
+          canRequest={canRequestReview(order)}
+          reviewRequestedAt={order.reviewRequestedAt ? order.reviewRequestedAt.toISOString() : null}
+          reviewSubmittedAt={order.reviewSubmittedAt ? order.reviewSubmittedAt.toISOString() : null}
+        />
+      </section>
+
+      <section className="mt-6 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <h2 className="mb-3 font-medium text-[var(--color-text)]">Cancel order</h2>
+        <CancelOrderSection
+          orderId={order.id}
+          canCancel={ADMIN_CANCELLABLE_STATUSES.includes(order.status)}
+          wasPaid={order.paymentStatus === "paid"}
+          estimatedRefundNote="A refund (if any) will be calculated automatically using your cancellation-fee settings, unless you enter an override amount below."
         />
       </section>
 

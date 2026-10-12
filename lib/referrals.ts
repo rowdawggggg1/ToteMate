@@ -9,13 +9,17 @@
  *    paid out manually (e-transfer, cash, etc.); an admin marks it paid.
  *  - Referee discount: a toggle. When on, the new customer also gets a
  *    %/$ discount on their own order. Independent amount/type from the
- *    referrer reward.
+ *    referrer reward. Patch 4: this is now actually TWO independent
+ *    settings -- referralRefereeDiscount* applies to a regular customer's
+ *    own code, referralRefereeDiscountRealtor* applies when the code is
+ *    realtor-owned -- so the owner can offer a realtor's clients a
+ *    discount without necessarily running one for ordinary
+ *    customer-to-customer referrals, or vice versa.
  *
- * Realtor-owned codes use the exact same mechanism, except the referrer
- * side is gated by a second toggle (referralRealtorsEarnReferrerReward),
- * defaulted off -- realtors already profit via subscriptions/gift card
- * resale, so their code is a pure client perk until the owner decides
- * otherwise.
+ * Realtor-owned codes' REFERRER side (what the realtor earns) is gated by
+ * a separate toggle (referralRealtorsEarnReferrerReward), defaulted off --
+ * realtors already profit via subscriptions/gift card resale, so their
+ * code is a pure client perk until the owner decides otherwise.
  */
 
 import { randomBytes } from "crypto";
@@ -138,10 +142,24 @@ export function calculateReferralAmounts(
   referralCode: typeof referralCodes.$inferSelect,
   orderSubtotalCents: number
 ): ReferralAmounts {
-  const refereeDiscountCents = settings.referralRefereeDiscountEnabled
-    ? settings.referralRefereeDiscountType === "percentage"
-      ? Math.round((orderSubtotalCents * Number(settings.referralRefereeDiscountPercentage)) / 100)
-      : settings.referralRefereeDiscountValueCents
+  const isRealtorCode = referralCode.ownerType === "realtor";
+  const refereeDiscountEnabled = isRealtorCode
+    ? settings.referralRefereeDiscountRealtorEnabled
+    : settings.referralRefereeDiscountEnabled;
+  const refereeDiscountType = isRealtorCode
+    ? settings.referralRefereeDiscountRealtorType
+    : settings.referralRefereeDiscountType;
+  const refereeDiscountValueCents = isRealtorCode
+    ? settings.referralRefereeDiscountRealtorValueCents
+    : settings.referralRefereeDiscountValueCents;
+  const refereeDiscountPercentage = isRealtorCode
+    ? settings.referralRefereeDiscountRealtorPercentage
+    : settings.referralRefereeDiscountPercentage;
+
+  const refereeDiscountCents = refereeDiscountEnabled
+    ? refereeDiscountType === "percentage"
+      ? Math.round((orderSubtotalCents * Number(refereeDiscountPercentage)) / 100)
+      : refereeDiscountValueCents
     : 0;
 
   const referrerEarns = referralCode.ownerType === "realtor" ? settings.referralRealtorsEarnReferrerReward : true;

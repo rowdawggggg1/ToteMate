@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { businessSettings } from "@/lib/db/schema";
 import { getActiveFaqs, getActivePackages } from "@/lib/catalog";
+import { getPublicReviews, getPublicReviewSummary } from "@/lib/reviews";
 import { buildPublicThemeStyle } from "@/lib/theme";
 import { SiteHeader } from "@/components/public/site-header";
 import { SiteFooter } from "@/components/public/site-footer";
@@ -40,18 +41,24 @@ export default async function HomePage() {
   let settings: typeof businessSettings.$inferSelect | undefined;
   let packages: Awaited<ReturnType<typeof getActivePackages>> = [];
   let faqs: Awaited<ReturnType<typeof getActiveFaqs>> = [];
+  let reviews: Awaited<ReturnType<typeof getPublicReviews>> = [];
+  let reviewSummary: Awaited<ReturnType<typeof getPublicReviewSummary>> = { averageRating: 0, count: 0 };
   let loadError = false;
 
   try {
     const db = getDb();
-    const [settingsRows, packageRows, faqRows] = await Promise.all([
+    const [settingsRows, packageRows, faqRows, reviewRows, reviewSummaryResult] = await Promise.all([
       db.select().from(businessSettings).where(eq(businessSettings.id, 1)).limit(1),
       getActivePackages(),
       getActiveFaqs(),
+      getPublicReviews(),
+      getPublicReviewSummary(),
     ]);
     settings = settingsRows[0];
     packages = packageRows;
     faqs = faqRows;
+    reviews = reviewRows;
+    reviewSummary = reviewSummaryResult;
   } catch {
     loadError = true;
   }
@@ -193,6 +200,53 @@ export default async function HomePage() {
             </div>
           </div>
         </section>
+
+        {/* Reviews */}
+        {reviewSummary.count > 0 && (
+          <section id="reviews" className="border-t border-[var(--color-border)] bg-[var(--color-surface)] py-16">
+            <div className="mx-auto max-w-5xl px-4 sm:px-6">
+              <div className="text-center">
+                <h2 className="font-serif text-3xl font-semibold text-[var(--color-text)]">
+                  What Customers Say
+                </h2>
+                <div className="mt-3 flex items-center justify-center gap-2">
+                  <span className="text-2xl text-[var(--color-accent)]" aria-hidden="true">
+                    {"★".repeat(Math.round(reviewSummary.averageRating))}
+                    <span className="text-[var(--color-border)]">
+                      {"★".repeat(5 - Math.round(reviewSummary.averageRating))}
+                    </span>
+                  </span>
+                  <span className="text-sm font-medium text-[var(--color-text)]">
+                    {reviewSummary.averageRating.toFixed(1)} out of 5
+                  </span>
+                  <span className="text-sm text-[var(--color-muted)]">
+                    ({reviewSummary.count} review{reviewSummary.count === 1 ? "" : "s"})
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {reviews.map((review) => (
+                  <div
+                    key={review.id}
+                    className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-background)] p-5"
+                  >
+                    <span className="text-[var(--color-accent)]" aria-hidden="true">
+                      {"★".repeat(review.rating)}
+                      <span className="text-[var(--color-border)]">{"★".repeat(5 - review.rating)}</span>
+                    </span>
+                    {review.comment && (
+                      <p className="mt-2 text-sm text-[var(--color-text)]">{review.comment}</p>
+                    )}
+                    <p className="mt-3 text-xs font-medium text-[var(--color-muted)]">
+                      {review.isAnonymous || !review.customerName ? "Anonymous" : review.customerName}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Service area */}
         {serviceArea && (
