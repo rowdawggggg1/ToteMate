@@ -28,15 +28,16 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 /**
- * Order numbers are "TM-YYYYMMDD-NNNNNN" -- useful in full on the order
- * detail page and in emails, but too wide for a table column. The trailing
- * 6-digit random segment is what's actually distinct between orders placed
- * the same day, so that's what's shown here; the full number is still in
- * the link's title attribute (hover) and on the detail page itself.
+ * Patch 5: order numbers are now sequential -- "TM-1", "TM-2", etc (older
+ * orders from before this change may still read "TM-YYYYMMDD-NNNNNN",
+ * which this still handles). Either way, the last "-"-separated segment is
+ * the part that's actually distinct/trackable, so that's what's shown here
+ * as "#<n>"; the full number is still in the link's title attribute
+ * (hover) and on the detail page itself.
  */
 function shortOrderNumber(orderNumber: string): string {
   const parts = orderNumber.split("-");
-  return parts.length === 3 ? `#${parts[2]}` : orderNumber;
+  return parts.length >= 2 ? `#${parts[parts.length - 1]}` : orderNumber;
 }
 
 function formatPlacedAt(createdAt: Date): string {

@@ -1,10 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/lib/db";
-import { businessSettings } from "@/lib/db/schema";
+import { businessSettings, orders, pendingBookings, totes } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth/admin";
 import { writeAudit } from "@/lib/audit";
 import { dollarsToCents } from "@/lib/money";
@@ -262,4 +262,81 @@ export async function updateSettingsAction(
   revalidatePath("/admin/settings");
 
   return { success: true };
+}
+
+// --- Patch 5: "Reset Testing Data" -------------------------------------
+//
+// Lets the owner wipe out test bookings made while trying out the app and
+// start order numbering over at 1, without having to touch the database
+// directly. Deliberately requires typing an exact confirmation phrase
+// (checked server-side, not just a JS confirm() dialog) since this is a
+// genuinely destructive, irreversible action.
+//
+// What it does:
+//  - Deletes every row in `orders`. Every table that references an order
+//    (order_tote_assignments, order_late_fees, order_extensions, reviews,
+//    referral_redemptions, gift_card_redemptions) is declared with
+//    `onDelete: "cascade"`, so those rows are removed automatically by
+//    Postgres -- nothing orphaned is left behind.
+//  - Deletes every staged (not-yet-paid) `pending_bookings` row too, so no
+//    half-finished test checkout lingers either.
+//  - Resets any tote currently "with_customer" or "needs_cleaning" back to
+//    "ready" -- those are states only a real order drives, so with every
+//    order gone they're stale. "damaged"/"lost"/"retired" are left alone,
+//    since those were the owner's own deliberate calls about a physical
+//    tote, not something driven by test orders.
+//  - Resets businessSettings.nextOrderNumber back to 1, so the next order
+//    created (public booking or admin custom order) is "TM-1" again.
+//
+// What it deliberately does NOT touch: gift card balances/referral code
+// usage counts aren't rolled back, since a deleted test order's effects on
+// those are a pre-existing, separate concern (and rolling them back
+// automatically risks silently changing real numbers the owner is relying
+// on) -- if test gift cards/referral codes were used, the owner should
+// double check those pages too.
+const RESET_CONFIRMATION_PHRASE = "DELETE ALL ORDERS";
+
+export type ResetTestingDataState = { ok: boolean; error?: string };
+
+export async function resetTestingDataAction(
+  _prevState: ResetTestingDataState,
+  formData: FormData
+): Promise<ResetTestingDataState> {
+  const admin = await requireAdmin();
+
+  const confirmation = String(formData.get("confirmation") ?? "").trim();
+  if (confirmation !== RESET_CONFIRMATION_PHRASE) {
+    return {
+      ok: false,
+      error: `Type "${RESET_CONFIRMATION_PHRASE}" exactly to confirm.`,
+    };
+  }
+
+  const db = getDb();
+
+  const deletedOrders = await db.delete(orders).returning({ id: orders.id });
+  await db.delete(pendingBookings);
+  await db
+    .update(totes)
+    .set({ status: "ready", updatedAt: new Date() })
+    .where(inArray(totes.status, ["with_customer", "needs_cleaning"]));
+  await db
+    .update(businessSettings)
+    .set({ nextOrderNumber: 1, updatedAt: new Date() })
+    .where(eq(businessSettings.id, 1));
+
+  await writeAudit({
+    actor: { type: "admin", id: admin.id, email: admin.email },
+    action: "TESTING_DATA_RESET",
+    entityType: "business_settings",
+    entityId: "1",
+    notes: `Deleted ${deletedOrders.length} order(s) and reset order numbering to 1.`,
+  });
+
+  revalidatePath("/admin/orders");
+  revalidatePath("/admin/settings");
+  revalidatePath("/admin/inventory");
+  revalidatePath("/admin");
+
+  return { ok: true };
 }

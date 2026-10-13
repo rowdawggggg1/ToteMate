@@ -800,3 +800,109 @@ shown only when at least one is set.
 **No new environment variables for this patch.** Same npm install/tsc
 sandbox limitation as every prior phase in this environment -- verified by
 careful manual re-read of every changed file rather than a local build.
+
+## Patch 5 (this delivery) -- address accuracy, checkout speed, map preview, sequential order numbers, layout fixes
+
+Run `npm install` (new dependency: `leaflet`, for the map preview -- see #4)
+and `npm run db:push` (one new `business_settings` column) after deploying
+this patch.
+
+**1. Fixed: admin order cancellation failing with "Invalid input."**
+Cancelling an order that was never paid always failed, because the
+"Refund override" field only renders in the form when the order *was*
+paid -- so for an unpaid order, the browser never submitted that field at
+all, and `formData.get("refundOverride")` came back `null` rather than
+simply missing. Zod's `.optional()` only treats `undefined` as "not
+provided" and rejects `null`, so validation failed every time. Fixed in
+`app/admin/(protected)/orders/actions.ts`'s `adminCancelOrderAction` by
+coalescing `null` to `""` before validating. No schema change.
+
+**2. Structured geocoding, to fix addresses like "5303 60 St, Camrose, AB"
+matching the wrong thing.** The previous free-text geocoding concatenated
+the whole address into one string and let the geocoder's natural-language
+parser split it back apart -- which, especially against sparse rural-
+Alberta data, could drop the house number entirely and match just the
+street. `lib/routing.ts` now also offers `geocodeAddressStructured` /
+`geocodeAndValidateServiceAreaStructured`, which send the house number/
+street, city, province, and postal code as separate fields to
+OpenRouteService's *structured* geocoding endpoint instead, skipping that
+parsing step. The public booking flow (`lib/orders.ts`) now uses the
+structured path; Business Settings' single free-text business-address
+field still uses the original free-text path (there's nothing to split
+there). This narrows the problem significantly but can't guarantee a
+perfect match for every address ORS has sparse data for -- see #4 for the
+complementary fix (a map preview so the customer can see and correct the
+resolved point themselves).
+
+**3. Faster checkout.** The booking pipeline used to run every external
+call (geocode delivery, geocode pickup, distance delivery, distance
+pickup, plus the three availability checks) one after another. Delivery
+and pickup are independent of each other, so their geocode calls now run
+in parallel via `Promise.all`, and so do their distance calls; the three
+availability checks (delivery-date, pickup-day capacity, tote inventory)
+run concurrently too, since none of them actually depends on another's
+result. Checkout should feel noticeably snappier, especially for a
+different-pickup-address booking (previously 4 sequential routing calls,
+now 2 batches of 2).
+
+**4. Map preview with a draggable pin, before the rental agreement.** On
+the address step, a new "Preview on map" link runs the same structured
+geocode the real booking will use and shows the resolved point on an
+OpenStreetMap map (`components/public/address-map-preview.tsx`, plain
+Leaflet -- no API key, no paid mapping dependency). If the match was
+low-confidence, a note says so right there and invites the customer to
+drag the pin to the correct spot or add more address detail -- so an
+ambiguous address can be fixed on the spot instead of only surfacing as a
+warning after checkout. Dragging the pin doesn't change the saved address
+text, only the exact point used for delivery/pickup distance pricing
+(`CreateBookingInput.deliveryLatLngOverride`/`pickupLatLngOverride` in
+`lib/orders.ts`) -- the typed address still has to pass the service-area
+check on its own. The existing step-4 low-confidence warning (with its
+"Edit" link back to the address step) is left in place as a safety net for
+anyone who skips the map check.
+
+**5. Fixed: going back to fix the address wiped the signature, silently
+forcing a re-sign.** The rental-agreement step's signature pad is only
+rendered while that step is showing, so navigating away (e.g. using the
+address-confidence warning's "Edit" link) and back unmounted and
+remounted the canvas -- the "I agree" checkbox still looked checked, but
+the actual drawn signature was gone, so submitting failed with "Please
+sign and agree" and the customer had to sign again with no visible reason
+why. `components/public/signature-pad.tsx` now accepts an `initialDataUrl`
+to restore a previous signature on mount and an `onChange` callback so the
+wizard can keep its own copy in state across remounts.
+
+**6. The rental-agreement step now starts at the top, not wherever the
+previous step left the scroll position.** This step shows the referral
+code / gift card fields above the agreement and signature pad, but since
+every step renders in the same page (no navigation between them), the
+browser kept whatever scroll position the previous step was left at --
+which could land a customer already scrolled down near the signature pad,
+past the referral/gift-card fields, with no reason to ever scroll back up
+to notice them. The wizard now scrolls to the top of the page on every
+step change.
+
+**7. Sequential order numbers ("TM-1", "TM-2", ...) instead of a random
+6-digit suffix** ("TM-20261012-873219"), so orders are easier to track and
+reference out loud. Both order-creation paths (public booking, admin
+custom orders) now pull from one shared, atomically-incremented counter
+(`business_settings.next_order_number`, via `lib/order-number.ts` --
+a single `UPDATE ... RETURNING`, safe under concurrent bookings thanks to
+Postgres's row lock). A new **"Reset Testing Data"** section at the bottom
+of Business Settings lets you permanently delete every order (fees,
+extensions, reviews, and referral/gift-card redemptions all cascade-delete
+with it) and reset the counter back to 1, once you're done test-booking --
+it requires typing an exact confirmation phrase first, since this can't be
+undone. Totes left "with customer" or "needs cleaning" by deleted test
+orders are reset to "ready"; totes you've marked damaged/lost/retired
+yourself are left alone. Gift card balances and referral usage from test
+orders are **not** rolled back automatically -- double-check those pages
+too if you used test codes/cards. New column:
+`business_settings.next_order_number` (defaults to 1).
+
+**8. "Where We Serve" moved to the top of the homepage**, right under the
+hero, instead of near the bottom below the reviews section -- so service
+area is one of the first things a visitor sees.
+
+**No other schema changes.** Only new column this patch:
+`business_settings.next_order_number`.

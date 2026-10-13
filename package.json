@@ -15,6 +15,7 @@
     "@stripe/react-stripe-js": "^6.8.2",
     "@stripe/stripe-js": "^9.17.0",
     "drizzle-orm": "^0.44.0",
+    "leaflet": "^1.9.4",
     "next": "^16.2.0",
     "nodemailer": "^10.0.14",
     "react": "^19.1.0",
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",
+    "@types/leaflet": "^1.9.8",
     "@types/node": "^22.0.0",
     "@types/nodemailer": "^8.0.2",
     "@types/react": "^19.0.0",

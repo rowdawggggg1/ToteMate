@@ -7,6 +7,12 @@ import {
   type CreateBookingInput,
   type CreateBookingResult,
 } from "@/lib/orders";
+import { getBusinessSettings } from "@/lib/availability";
+import {
+  geocodeAndValidateServiceAreaStructured,
+  isLowConfidenceGeocode,
+  RoutingError,
+} from "@/lib/routing";
 
 /**
  * Thin Server Action boundary so the client wizard can call the booking
@@ -39,4 +45,50 @@ export async function cancelPendingBookingAction(stripePaymentIntentId: string):
  */
 export async function isOrderReadyAction(orderId: string): Promise<boolean> {
   return isOrderReady(orderId);
+}
+
+export type GeocodePreviewResult =
+  | { ok: true; lat: number; lng: number; formatted: string; lowConfidence: boolean }
+  | { ok: false; error: string };
+
+/**
+ * Patch 5: lets the booking wizard show a map preview of an address (with
+ * a draggable pin to fix it) BEFORE the customer reaches the rental
+ * agreement, instead of only finding out an address was ambiguous after
+ * "Continue to payment". Read-only -- doesn't create/charge anything, just
+ * runs the same structured geocode the real booking will use so the map
+ * shows the same point pricing/routing would.
+ */
+export async function previewGeocodeAction(address: {
+  street: string;
+  city: string;
+  province: string;
+  postalCode: string;
+  country: string;
+}): Promise<GeocodePreviewResult> {
+  const settings = await getBusinessSettings();
+  try {
+    const geocode = await geocodeAndValidateServiceAreaStructured(
+      {
+        address: address.street,
+        locality: address.city,
+        region: address.province,
+        postalcode: address.postalCode,
+        country: address.country,
+      },
+      settings.serviceAreaProvinceCode
+    );
+    return {
+      ok: true,
+      lat: geocode.lat,
+      lng: geocode.lng,
+      formatted: geocode.formatted,
+      lowConfidence: isLowConfidenceGeocode(geocode),
+    };
+  } catch (err) {
+    if (err instanceof RoutingError) {
+      return { ok: false, error: err.message };
+    }
+    return { ok: false, error: "Could not look up that address. Please try again." };
+  }
 }

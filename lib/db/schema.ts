@@ -268,6 +268,15 @@ export const businessSettings = pgTable("business_settings", {
     .notNull()
     .default("0"),
 
+  // Patch 5: the next sequential order number to hand out (orders display
+  // as "TM-<n>"), so the owner can track orders by small, easy-to-say
+  // numbers instead of a random 6-digit string. Incremented atomically (see
+  // lib/order-number.ts) every time an order is created, from either the
+  // public booking flow or an admin-created custom order -- both share the
+  // same counter so numbers never collide or get reused. Resettable to 1
+  // via the admin "Reset Testing Data" action once real bookings begin.
+  nextOrderNumber: integer("next_order_number").notNull().default(1),
+
   // Doubles as the first-run setup mutex: NULL until the initial admin
   // account has been successfully created (see app/setup/actions.ts).
   setupCompletedAt: timestamp("setup_completed_at", { withTimezone: true }),

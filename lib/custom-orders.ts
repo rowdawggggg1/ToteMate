@@ -42,6 +42,7 @@ import {
 } from "@/lib/availability";
 import { resolveFinalAmountCents } from "@/lib/pricing";
 import { generateManageToken, hashManageToken } from "@/lib/manage-token";
+import { allocateNextOrderNumber } from "@/lib/order-number";
 import { getStripe } from "@/lib/stripe";
 import { sendBookingConfirmationEmail } from "@/lib/email";
 
@@ -87,14 +88,6 @@ export type CreateCustomOrderInput = {
 
   paymentMethod: "mark_paid" | "charge_stripe";
 };
-
-function generateOrderNumber(): string {
-  const datePart = new Intl.DateTimeFormat("en-CA", { timeZone: "UTC" })
-    .format(new Date())
-    .replace(/-/g, "");
-  const randomPart = Math.floor(100000 + Math.random() * 900000);
-  return `TM-${datePart}-${randomPart}`;
-}
 
 export type CreateCustomOrderResult =
   | {
@@ -173,7 +166,7 @@ export async function createCustomOrder(
 
   const manageToken = generateManageToken();
   const orderId = crypto.randomUUID();
-  const orderNumber = generateOrderNumber();
+  const orderNumber = await allocateNextOrderNumber();
   const requiresPayment = input.paymentMethod === "charge_stripe";
 
   const orderValues = {

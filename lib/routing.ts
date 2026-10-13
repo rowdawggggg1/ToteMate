@@ -65,6 +65,7 @@ export class RoutingError extends Error {
 }
 
 const ORS_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search";
+const ORS_STRUCTURED_GEOCODE_URL = "https://api.openrouteservice.org/geocode/search/structured";
 const ORS_DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-car";
 
 function getOrsApiKey(): string {
@@ -78,39 +79,19 @@ function getOrsApiKey(): string {
 }
 
 /**
- * Geocodes a free-text address into coordinates + region info. Throws
- * RoutingError -- never returns a guessed location -- if the address can't
- * be resolved or the API call fails for any reason.
+ * Shared feature -> GeocodeResult parsing, used by both the free-text and
+ * structured geocode functions below -- the ORS/Pelias response shape
+ * (geometry.coordinates + properties.*) is identical either way, only the
+ * request differs. `fallbackLabel` is used as `formatted` if the provider
+ * doesn't return a `label` property.
  */
-export async function geocodeAddress(addressText: string): Promise<GeocodeResult> {
-  const trimmed = addressText.trim();
-  if (!trimmed) {
-    throw new RoutingError("An address is required.");
-  }
-
-  const url =
-    `${ORS_GEOCODE_URL}?api_key=${encodeURIComponent(getOrsApiKey())}` +
-    `&text=${encodeURIComponent(trimmed)}&size=1`;
-
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch {
-    throw new RoutingError(
-      "Could not reach the routing service to verify this address. Please try again."
-    );
-  }
-
-  if (!response.ok) {
-    throw new RoutingError(
-      `The routing service could not process this address (status ${response.status}).`
-    );
-  }
-
-  const data = await response.json();
-  const feature = data?.features?.[0];
+function parseGeocodeFeature(
+  feature: any,
+  fallbackLabel: string,
+  notFoundMessage: string
+): GeocodeResult {
   if (!feature) {
-    throw new RoutingError("That address could not be found. Please check it and try again.");
+    throw new RoutingError(notFoundMessage);
   }
 
   const coords = feature.geometry?.coordinates;
@@ -133,13 +114,110 @@ export async function geocodeAddress(addressText: string): Promise<GeocodeResult
   return {
     lat,
     lng,
-    formatted: typeof props.label === "string" ? props.label : trimmed,
+    formatted: typeof props.label === "string" ? props.label : fallbackLabel,
     regionCode: typeof props.region_a === "string" ? props.region_a : null,
     regionName: typeof props.region === "string" ? props.region : null,
     confidence,
     accuracy,
     matchType,
   };
+}
+
+async function fetchOrsGeocode(url: string): Promise<any> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch {
+    throw new RoutingError(
+      "Could not reach the routing service to verify this address. Please try again."
+    );
+  }
+
+  if (!response.ok) {
+    throw new RoutingError(
+      `The routing service could not process this address (status ${response.status}).`
+    );
+  }
+
+  return response.json();
+}
+
+/**
+ * Geocodes a free-text address into coordinates + region info. Throws
+ * RoutingError -- never returns a guessed location -- if the address can't
+ * be resolved or the API call fails for any reason.
+ */
+export async function geocodeAddress(addressText: string): Promise<GeocodeResult> {
+  const trimmed = addressText.trim();
+  if (!trimmed) {
+    throw new RoutingError("An address is required.");
+  }
+
+  const url =
+    `${ORS_GEOCODE_URL}?api_key=${encodeURIComponent(getOrsApiKey())}` +
+    `&text=${encodeURIComponent(trimmed)}&size=1`;
+
+  const data = await fetchOrsGeocode(url);
+  return parseGeocodeFeature(
+    data?.features?.[0],
+    trimmed,
+    "That address could not be found. Please check it and try again."
+  );
+}
+
+export type StructuredAddressInput = {
+  /** House number + street, e.g. "5303 60 St". */
+  address: string;
+  locality?: string;
+  region?: string;
+  postalcode?: string;
+  country?: string;
+};
+
+/**
+ * Geocodes an address given as discrete fields (house number/street,
+ * city, province, postal code, country) via ORS's *structured* geocoding
+ * endpoint, instead of concatenating everything into one free-text string.
+ *
+ * Free-text geocoding runs the whole string through Pelias's natural-
+ * language parser, which -- especially against sparse rural-Alberta data --
+ * can mis-split a precise "5303 60 St, Camrose, AB" into just "60 St" and
+ * drop the house number and/or city entirely, producing a low-confidence,
+ * wrong, or overly broad match even though the customer typed everything
+ * correctly. Sending each field in its own parameter skips that parsing
+ * step, so a precise civic number is far less likely to get lost. Throws
+ * RoutingError -- never returns a guessed location -- if the address can't
+ * be resolved or the API call fails for any reason.
+ */
+export async function geocodeAddressStructured(
+  input: StructuredAddressInput
+): Promise<GeocodeResult> {
+  const address = input.address.trim();
+  if (!address) {
+    throw new RoutingError("An address is required.");
+  }
+
+  const params = new URLSearchParams({
+    api_key: getOrsApiKey(),
+    address,
+    size: "1",
+  });
+  if (input.locality?.trim()) params.set("locality", input.locality.trim());
+  if (input.region?.trim()) params.set("region", input.region.trim());
+  if (input.postalcode?.trim()) params.set("postalcode", input.postalcode.trim());
+  if (input.country?.trim()) params.set("country", input.country.trim());
+
+  const url = `${ORS_STRUCTURED_GEOCODE_URL}?${params.toString()}`;
+  const fallbackLabel = [address, input.locality, input.region, input.postalcode, input.country]
+    .filter(Boolean)
+    .join(", ");
+
+  const data = await fetchOrsGeocode(url);
+  return parseGeocodeFeature(
+    data?.features?.[0],
+    fallbackLabel,
+    "That address could not be found. Please check it and try again."
+  );
 }
 
 /** Canadian province name <-> code table, used as a fallback service-area
@@ -248,6 +326,25 @@ export async function geocodeAndValidateServiceArea(
   serviceAreaProvinceCode: string
 ): Promise<GeocodeResult> {
   const geocode = await geocodeAddress(addressText);
+  if (!isWithinServiceArea(geocode, serviceAreaProvinceCode)) {
+    throw new RoutingError(
+      "That address is outside our current service area. Please double-check the address, or contact us if you believe this is an error."
+    );
+  }
+  return geocode;
+}
+
+/**
+ * Same as geocodeAndValidateServiceArea, but using the structured geocoding
+ * endpoint (see geocodeAddressStructured) -- the preferred path for any
+ * caller that already has the address broken into discrete fields (street/
+ * city/province/postal code), e.g. the public booking form.
+ */
+export async function geocodeAndValidateServiceAreaStructured(
+  input: StructuredAddressInput,
+  serviceAreaProvinceCode: string
+): Promise<GeocodeResult> {
+  const geocode = await geocodeAddressStructured(input);
   if (!isWithinServiceArea(geocode, serviceAreaProvinceCode)) {
     throw new RoutingError(
       "That address is outside our current service area. Please double-check the address, or contact us if you believe this is an error."

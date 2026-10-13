@@ -3,6 +3,7 @@ import { getDb } from "@/lib/db";
 import { businessSettings } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
 import { SettingsForm, type SettingsInitialValues } from "./settings-form";
+import { ResetTestingDataSection } from "./reset-testing-data-section";
 
 export default async function AdminSettingsPage() {
   const db = getDb();
@@ -71,6 +72,7 @@ export default async function AdminSettingsPage() {
         ToteMate. Changing them here never rewrites past orders once those exist.
       </p>
       <SettingsForm initialValues={initialValues} />
+      <ResetTestingDataSection nextOrderNumber={s?.nextOrderNumber ?? 1} />
     </div>
   );
 }

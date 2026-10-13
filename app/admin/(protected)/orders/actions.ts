@@ -645,8 +645,14 @@ export async function adminCancelOrderAction(
 ): Promise<OrderActionState> {
   const admin = await requireAdmin();
   const parsed = adminCancelSchema.safeParse({
-    reason: formData.get("reason"),
-    refundOverride: formData.get("refundOverride"),
+    // formData.get() returns null (not undefined) for a field that isn't
+    // present in the submitted form at all -- which happens here for
+    // refundOverride, since that input only renders when the order was
+    // paid. Zod's .optional() only treats `undefined` as "absent" and
+    // rejects `null`, so without this coalesce every cancellation of an
+    // unpaid order failed validation with a generic "Invalid input."
+    reason: formData.get("reason") ?? "",
+    refundOverride: formData.get("refundOverride") ?? "",
   });
   if (!parsed.success) return { ok: false, error: "Invalid input." };
 

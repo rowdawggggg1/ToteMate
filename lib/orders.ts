@@ -61,12 +61,14 @@ import {
 } from "@/lib/pricing";
 import {
   calculateRouteDistanceKm,
-  geocodeAndValidateServiceArea,
+  geocodeAndValidateServiceAreaStructured,
   isLowConfidenceGeocode,
   isWithinMaxRadius,
   RoutingError,
+  type StructuredAddressInput,
 } from "@/lib/routing";
 import { generateManageToken, hashManageToken } from "@/lib/manage-token";
+import { allocateNextOrderNumber } from "@/lib/order-number";
 import { getStripe } from "@/lib/stripe";
 import { writeAudit } from "@/lib/audit";
 import { sendBookingConfirmationEmail } from "@/lib/email";
@@ -95,6 +97,19 @@ export function formatAddressForGeocoding(a: AddressInput): string {
   return [a.street, a.city, a.province, a.postalCode, a.country].filter(Boolean).join(", ");
 }
 
+/** Maps our address form fields onto ORS's structured-geocoding params --
+ * see geocodeAddressStructured's doc comment for why structured (discrete
+ * fields) beats free-text concatenation for precise civic-number matches. */
+function toStructuredGeocodeInput(a: AddressInput): StructuredAddressInput {
+  return {
+    address: a.street,
+    locality: a.city,
+    region: a.province,
+    postalcode: a.postalCode,
+    country: a.country,
+  };
+}
+
 export type AddOnSelection = { addOnId: string; quantity: number };
 
 export type CreateBookingInput = {
@@ -112,10 +127,21 @@ export type CreateBookingInput = {
 
   deliveryAddress: AddressInput;
   deliveryInstructions?: string;
+  // Patch 5: if the customer dragged the map-preview pin to correct a
+  // low-confidence (or just plain wrong) geocode match, this is where that
+  // adjusted point lands -- used for the actual distance/pricing
+  // calculation in place of the typed address's own geocode result. The
+  // typed address is still geocoded and still has to pass the service-area
+  // check either way (see createBookingOrderAndPaymentIntent); only the
+  // exact point used for routing is overridden, since trusting an
+  // arbitrary customer-supplied lat/lng for the area check itself would
+  // defeat the point of that check.
+  deliveryLatLngOverride?: { lat: number; lng: number } | null;
 
   pickupSameAsDelivery: boolean;
   pickupAddress?: AddressInput;
   pickupInstructions?: string;
+  pickupLatLngOverride?: { lat: number; lng: number } | null;
 
   agreementVersionId: string;
   agreementSignatureDataUrl: string;
@@ -151,14 +177,6 @@ export type CreateBookingResult =
       pickupAddressLowConfidence: boolean;
     }
   | { ok: false; error: string };
-
-function generateOrderNumber(): string {
-  const datePart = new Intl.DateTimeFormat("en-CA", { timeZone: "UTC" })
-    .format(new Date())
-    .replace(/-/g, "");
-  const randomPart = Math.floor(100000 + Math.random() * 900000); // 6 digits
-  return `TM-${datePart}-${randomPart}`;
-}
 
 export async function createBookingOrderAndPaymentIntent(
   input: CreateBookingInput
@@ -221,29 +239,30 @@ export async function createBookingOrderAndPaymentIntent(
 
   // --- Dates & availability -----------------------------------------------
 
-  const deliveryDateCheck = await checkDeliveryDateAvailability(input.requestedDeliveryDate, {
-    minLeadTimeDays: settings.minLeadTimeDays,
-    timezone: settings.timezone,
-  });
-  if (!deliveryDateCheck.ok) {
-    return { ok: false, error: deliveryDateCheck.reason ?? "That delivery date isn't available." };
-  }
-
+  // These three checks don't depend on each other's results (the pickup
+  // date is derived from the requested delivery date + package duration,
+  // not from deliveryDateCheck), so run them concurrently instead of one
+  // after another.
   const confirmedPickupDate = addWeeksToDateString(
     input.requestedDeliveryDate,
     pkg.rentalDurationWeeks + input.extensionWeeks
   );
 
-  const pickupCapacity = await checkDailyCapacity(confirmedPickupDate);
+  const [deliveryDateCheck, pickupCapacity, toteAvailability] = await Promise.all([
+    checkDeliveryDateAvailability(input.requestedDeliveryDate, {
+      minLeadTimeDays: settings.minLeadTimeDays,
+      timezone: settings.timezone,
+    }),
+    checkDailyCapacity(confirmedPickupDate),
+    checkToteAvailability(input.requestedDeliveryDate, confirmedPickupDate, pkg.toteQuantity),
+  ]);
+
+  if (!deliveryDateCheck.ok) {
+    return { ok: false, error: deliveryDateCheck.reason ?? "That delivery date isn't available." };
+  }
   if (!pickupCapacity.withinCapacity) {
     return { ok: false, error: "That pickup date is fully booked. Please choose another delivery date." };
   }
-
-  const toteAvailability = await checkToteAvailability(
-    input.requestedDeliveryDate,
-    confirmedPickupDate,
-    pkg.toteQuantity
-  );
   if (!toteAvailability.available) {
     return {
       ok: false,
@@ -265,19 +284,33 @@ export async function createBookingOrderAndPaymentIntent(
     lng: Number(settings.businessOriginLng),
   };
 
+  // Delivery and (when different) pickup each need a geocode call and then
+  // a distance call. Those two steps are run in parallel for delivery vs.
+  // pickup (they're independent of each other) rather than one after the
+  // other -- this is the main reason checkout used to feel slow, since
+  // four sequential external API round-trips easily added up to several
+  // seconds.
   let deliveryGeocode;
   let pickupGeocode;
   try {
-    deliveryGeocode = await geocodeAndValidateServiceArea(
-      formatAddressForGeocoding(input.deliveryAddress),
-      settings.serviceAreaProvinceCode
-    );
-    pickupGeocode = input.pickupSameAsDelivery
-      ? deliveryGeocode
-      : await geocodeAndValidateServiceArea(
-          formatAddressForGeocoding(input.pickupAddress ?? input.deliveryAddress),
+    if (input.pickupSameAsDelivery) {
+      deliveryGeocode = await geocodeAndValidateServiceAreaStructured(
+        toStructuredGeocodeInput(input.deliveryAddress),
+        settings.serviceAreaProvinceCode
+      );
+      pickupGeocode = deliveryGeocode;
+    } else {
+      [deliveryGeocode, pickupGeocode] = await Promise.all([
+        geocodeAndValidateServiceAreaStructured(
+          toStructuredGeocodeInput(input.deliveryAddress),
           settings.serviceAreaProvinceCode
-        );
+        ),
+        geocodeAndValidateServiceAreaStructured(
+          toStructuredGeocodeInput(input.pickupAddress ?? input.deliveryAddress),
+          settings.serviceAreaProvinceCode
+        ),
+      ]);
+    }
   } catch (err) {
     if (err instanceof RoutingError) {
       return { ok: false, error: err.message };
@@ -285,16 +318,31 @@ export async function createBookingOrderAndPaymentIntent(
     throw err;
   }
 
+  // Patch 5: use the customer's map-preview pin adjustment (if any) as the
+  // actual point to route from, instead of the geocoder's own match -- see
+  // CreateBookingInput.deliveryLatLngOverride's doc comment for why this
+  // doesn't also change what the service-area check (above) validated
+  // against.
+  const deliveryCoords = input.deliveryLatLngOverride ?? {
+    lat: deliveryGeocode.lat,
+    lng: deliveryGeocode.lng,
+  };
+  const pickupCoords = input.pickupSameAsDelivery
+    ? deliveryCoords
+    : input.pickupLatLngOverride ?? { lat: pickupGeocode.lat, lng: pickupGeocode.lng };
+
   let deliveryDistanceKm: number;
   let pickupDistanceKm: number;
   try {
-    deliveryDistanceKm = await calculateRouteDistanceKm(origin, {
-      lat: deliveryGeocode.lat,
-      lng: deliveryGeocode.lng,
-    });
-    pickupDistanceKm = input.pickupSameAsDelivery
-      ? deliveryDistanceKm
-      : await calculateRouteDistanceKm(origin, { lat: pickupGeocode.lat, lng: pickupGeocode.lng });
+    if (input.pickupSameAsDelivery) {
+      deliveryDistanceKm = await calculateRouteDistanceKm(origin, deliveryCoords);
+      pickupDistanceKm = deliveryDistanceKm;
+    } else {
+      [deliveryDistanceKm, pickupDistanceKm] = await Promise.all([
+        calculateRouteDistanceKm(origin, deliveryCoords),
+        calculateRouteDistanceKm(origin, pickupCoords),
+      ]);
+    }
   } catch (err) {
     if (err instanceof RoutingError) {
       return { ok: false, error: err.message };
@@ -310,10 +358,13 @@ export async function createBookingOrderAndPaymentIntent(
     };
   }
 
-  const deliveryAddressLowConfidence = isLowConfidenceGeocode(deliveryGeocode);
+  // A manual pin placement means the customer already resolved the
+  // ambiguity themselves, so there's nothing left to warn them about.
+  const deliveryAddressLowConfidence =
+    !input.deliveryLatLngOverride && isLowConfidenceGeocode(deliveryGeocode);
   const pickupAddressLowConfidence = input.pickupSameAsDelivery
     ? deliveryAddressLowConfidence
-    : isLowConfidenceGeocode(pickupGeocode);
+    : !input.pickupLatLngOverride && isLowConfidenceGeocode(pickupGeocode);
 
   // --- Agreement -------------------------------------------------------------
 
@@ -407,7 +458,7 @@ export async function createBookingOrderAndPaymentIntent(
 
   const manageToken = generateManageToken();
   const orderId = crypto.randomUUID();
-  const orderNumber = generateOrderNumber();
+  const orderNumber = await allocateNextOrderNumber();
 
   const orderValues = {
     orderNumber,
@@ -439,8 +490,11 @@ export async function createBookingOrderAndPaymentIntent(
     deliveryAddress: {
       ...input.deliveryAddress,
       formatted: deliveryGeocode.formatted,
-      lat: deliveryGeocode.lat,
-      lng: deliveryGeocode.lng,
+      // Stores the point actually used for routing/pricing -- the
+      // customer's dragged pin when there is one, otherwise the geocoder's
+      // own match (deliveryCoords already resolves that, see above).
+      lat: deliveryCoords.lat,
+      lng: deliveryCoords.lng,
     },
     pickupSameAsDelivery: input.pickupSameAsDelivery,
     pickupAddress: input.pickupSameAsDelivery
@@ -448,8 +502,8 @@ export async function createBookingOrderAndPaymentIntent(
       : {
           ...(input.pickupAddress as AddressInput),
           formatted: pickupGeocode.formatted,
-          lat: pickupGeocode.lat,
-          lng: pickupGeocode.lng,
+          lat: pickupCoords.lat,
+          lng: pickupCoords.lng,
         },
     deliveryInstructions: input.deliveryInstructions || null,
     pickupInstructions: input.pickupInstructions || null,

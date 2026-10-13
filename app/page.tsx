@@ -135,6 +135,19 @@ export default async function HomePage() {
           </div>
         </section>
 
+        {/* Service area -- moved right under the hero per owner request:
+            "people need to see that right away" */}
+        {serviceArea && (
+          <section className="border-t border-[var(--color-border)] bg-[var(--color-surface)] py-10">
+            <div className="mx-auto max-w-2xl px-4 text-center sm:px-6">
+              <h2 className="font-serif text-xl font-semibold text-[var(--color-text)]">
+                Where We Serve
+              </h2>
+              <p className="mt-2 text-[var(--color-muted)]">Serving {serviceArea}.</p>
+            </div>
+          </section>
+        )}
+
         {/* How It Works */}
         <section id="how-it-works" className="border-t border-[var(--color-border)] bg-[var(--color-surface)] py-16">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
@@ -244,18 +257,6 @@ export default async function HomePage() {
                   </div>
                 ))}
               </div>
-            </div>
-          </section>
-        )}
-
-        {/* Service area */}
-        {serviceArea && (
-          <section className="py-16">
-            <div className="mx-auto max-w-2xl px-4 text-center sm:px-6">
-              <h2 className="font-serif text-2xl font-semibold text-[var(--color-text)]">
-                Where We Serve
-              </h2>
-              <p className="mt-2 text-[var(--color-muted)]">Serving {serviceArea}.</p>
             </div>
           </section>
         )}

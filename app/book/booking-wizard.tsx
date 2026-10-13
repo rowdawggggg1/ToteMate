@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { loadStripe } from "@stripe/stripe-js";
 import {
   Elements,
@@ -10,8 +10,14 @@ import {
 } from "@stripe/react-stripe-js";
 import { centsToDollarsString } from "@/lib/money";
 import { SignaturePad, type SignaturePadHandle } from "@/components/public/signature-pad";
-import { submitBookingAction, cancelPendingBookingAction, isOrderReadyAction } from "./actions";
+import {
+  submitBookingAction,
+  cancelPendingBookingAction,
+  isOrderReadyAction,
+  previewGeocodeAction,
+} from "./actions";
 import type { CreateBookingResult } from "@/lib/orders";
+import { AddressMapPreview } from "@/components/public/address-map-preview";
 
 export type PackageOption = {
   id: string;
@@ -106,11 +112,32 @@ export function BookingWizard({
   const [pickupSameAsDelivery, setPickupSameAsDelivery] = useState(true);
   const [pickupAddress, setPickupAddress] = useState<AddressForm>(emptyAddress);
   const [pickupInstructions, setPickupInstructions] = useState("");
+  // Patch 5: set when the customer drags the map-preview pin to correct a
+  // low-confidence (or just wrong) geocode match -- sent through to the
+  // booking so the ACTUAL distance/pricing calculation uses this exact
+  // point instead of the geocoder's own match. Cleared whenever the
+  // address text changes, since a stale override pin could silently
+  // disagree with a newly-edited address.
+  const [deliveryLatLngOverride, setDeliveryLatLngOverride] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [pickupLatLngOverride, setPickupLatLngOverride] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
 
   const [referralCode, setReferralCode] = useState("");
   const [giftCardCode, setGiftCardCode] = useState("");
 
   const [agreementChecked, setAgreementChecked] = useState(false);
+  // Kept in state (not just read off the canvas via the ref) so a drawn
+  // signature survives the agree-and-sign step unmounting -- e.g. the
+  // customer uses the low-confidence-address warning's "Edit" link to go
+  // back to step 2, then returns to step 3. Without this, that remount
+  // wiped the canvas and silently required them to sign again even though
+  // the "I agree" checkbox still looked checked.
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [booking, setBooking] = useState<
@@ -122,6 +149,19 @@ export function BookingWizard({
   const [finalizing, setFinalizing] = useState(false);
 
   const signaturePadRef = useRef<SignaturePadHandle>(null);
+
+  // This wizard renders every step in the same page (no route change
+  // between them), so the browser leaves the scroll position exactly where
+  // it was on the previous step. That meant going from a step the customer
+  // had scrolled down on (e.g. to hit "Next" at the bottom) straight into
+  // the rental-agreement step landed them mid/low on that step too --
+  // scrolled right past the referral code / gift card fields and straight
+  // toward the signature pad, so they might never see or use those fields.
+  // Scroll back to the top of the page every time the step changes so each
+  // new step always starts from its own top.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [step]);
 
   const selectedPackage = packages.find((p) => p.id === selectedPackageId) ?? null;
   const generalAddOns = addOns.filter((a) => a.packageId === null && !a.isWeeklyExtension);
@@ -150,8 +190,8 @@ export function BookingWizard({
 
   async function handleReviewSubmit() {
     if (!selectedPackage) return;
-    const signatureDataUrl = signaturePadRef.current?.getDataUrl() ?? null;
-    if (!agreementChecked || !signatureDataUrl) {
+    const signedDataUrl = signaturePadRef.current?.getDataUrl() ?? signatureDataUrl;
+    if (!agreementChecked || !signedDataUrl) {
       setSubmitError("Please sign and agree to the rental agreement to continue.");
       return;
     }
@@ -175,11 +215,13 @@ export function BookingWizard({
       preferredPickupWindow: preferredPickupWindow || undefined,
       deliveryAddress,
       deliveryInstructions: deliveryInstructions || undefined,
+      deliveryLatLngOverride,
       pickupSameAsDelivery,
       pickupAddress: pickupSameAsDelivery ? undefined : pickupAddress,
       pickupInstructions: pickupSameAsDelivery ? undefined : pickupInstructions || undefined,
+      pickupLatLngOverride: pickupSameAsDelivery ? undefined : pickupLatLngOverride,
       agreementVersionId: agreement.id,
-      agreementSignatureDataUrl: signatureDataUrl,
+      agreementSignatureDataUrl: signedDataUrl,
       referralCode: referralCode.trim() || undefined,
       giftCardCode: giftCardCode.trim() || undefined,
     });
@@ -361,6 +403,10 @@ export function BookingWizard({
               </FormField>
 
               <AddressFields address={deliveryAddress} onChange={setDeliveryAddress} />
+              <AddressMapChecker
+                address={deliveryAddress}
+                onOverrideChange={setDeliveryLatLngOverride}
+              />
               <FormField label="Delivery instructions (recommended)">
                 <textarea
                   rows={2}
@@ -417,6 +463,10 @@ export function BookingWizard({
                   />
                 </FormField>
                 <AddressFields address={pickupAddress} onChange={setPickupAddress} />
+                <AddressMapChecker
+                  address={pickupAddress}
+                  onOverrideChange={setPickupLatLngOverride}
+                />
                 <FormField label="Pickup instructions (optional)">
                   <textarea
                     rows={2}
@@ -544,7 +594,12 @@ export function BookingWizard({
 
           <div>
             <h3 className="font-medium text-[var(--color-text)]">Sign to agree</h3>
-            <SignaturePad ref={signaturePadRef} className="mt-2" />
+            <SignaturePad
+              ref={signaturePadRef}
+              className="mt-2"
+              initialDataUrl={signatureDataUrl}
+              onChange={setSignatureDataUrl}
+            />
           </div>
 
           <label className="flex items-start gap-3">
@@ -766,6 +821,117 @@ function AddressFields({
           className={inputClass}
         />
       </FormField>
+    </div>
+  );
+}
+
+type AddressGeocodePreview = {
+  lat: number;
+  lng: number;
+  formatted: string;
+  lowConfidence: boolean;
+};
+
+/**
+ * Patch 5: lets the customer preview an address on a map -- with a
+ * draggable pin -- right where they entered it, instead of only finding
+ * out an address was ambiguous after reaching the payment step. Manages
+ * its own "check this address" request; reports the chosen override point
+ * (or null, once the address changes and the old pin is no longer trusted)
+ * up to the wizard via onOverrideChange.
+ */
+function AddressMapChecker({
+  address,
+  onOverrideChange,
+}: {
+  address: AddressForm;
+  onOverrideChange: (latLng: { lat: number; lng: number } | null) => void;
+}) {
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [preview, setPreview] = useState<AddressGeocodePreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pin, setPin] = useState<{ lat: number; lng: number } | null>(null);
+  const onOverrideChangeRef = useRef(onOverrideChange);
+  onOverrideChangeRef.current = onOverrideChange;
+
+  const addressKey = `${address.street}|${address.city}|${address.province}|${address.postalCode}|${address.country}`;
+  const addressKeyRef = useRef(addressKey);
+  useEffect(() => {
+    if (addressKeyRef.current === addressKey) return;
+    addressKeyRef.current = addressKey;
+    // The address text changed since the last check -- the old preview/pin
+    // no longer necessarily matches it, so clear both rather than risk
+    // silently routing/pricing from a stale point.
+    setStatus("idle");
+    setPreview(null);
+    setPin(null);
+    setError(null);
+    onOverrideChangeRef.current(null);
+  }, [addressKey]);
+
+  async function check() {
+    setStatus("loading");
+    setError(null);
+    const result = await previewGeocodeAction(address);
+    if (!result.ok) {
+      setStatus("error");
+      setError(result.error);
+      setPreview(null);
+      setPin(null);
+      onOverrideChangeRef.current(null);
+      return;
+    }
+    setPreview({
+      lat: result.lat,
+      lng: result.lng,
+      formatted: result.formatted,
+      lowConfidence: result.lowConfidence,
+    });
+    setPin(null);
+    onOverrideChangeRef.current(null);
+    setStatus("ready");
+  }
+
+  const canCheck = Boolean(address.street && address.city);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => void check()}
+        disabled={!canCheck || status === "loading"}
+        className="text-sm font-medium text-[var(--color-primary)] hover:underline disabled:cursor-not-allowed disabled:text-[var(--color-muted)] disabled:no-underline"
+      >
+        {status === "loading" ? "Checking address…" : "Preview on map"}
+      </button>
+
+      {error && <p className="mt-1 text-xs text-[var(--color-error)]">{error}</p>}
+
+      {preview && (
+        <div className="mt-2 space-y-2">
+          {preview.lowConfidence && !pin && (
+            <p className="text-xs text-[var(--color-warning)]">
+              We couldn&apos;t match this address with full confidence -- the pin below is our
+              best guess. Drag it to the right spot if it&apos;s off, or add more detail (like a
+              house number) to the address above.
+            </p>
+          )}
+          <p className="text-xs text-[var(--color-muted)]">Resolved to: {preview.formatted}</p>
+          <AddressMapPreview
+            lat={pin?.lat ?? preview.lat}
+            lng={pin?.lng ?? preview.lng}
+            onPinMoved={(lat, lng) => {
+              setPin({ lat, lng });
+              onOverrideChangeRef.current({ lat, lng });
+            }}
+          />
+          <p className="text-xs text-[var(--color-muted)]">
+            {pin
+              ? "Pin adjusted -- we'll deliver/pick up from this exact spot."
+              : "If the pin isn't in the right place, drag it there."}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
