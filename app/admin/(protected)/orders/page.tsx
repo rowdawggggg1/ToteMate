@@ -3,6 +3,8 @@ import { desc, notInArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { orders } from "@/lib/db/schema";
 import { centsToDollarsString } from "@/lib/money";
+import { formatDateTime } from "@/lib/format-datetime";
+import { getBusinessSettings } from "@/lib/availability";
 
 /** Cancelled/refunded orders are never deleted (full history is kept
  * deliberately -- see adminCancelOrderAction), but they'd otherwise clutter
@@ -40,12 +42,6 @@ function shortOrderNumber(orderNumber: string): string {
   return parts.length >= 2 ? `#${parts[parts.length - 1]}` : orderNumber;
 }
 
-function formatPlacedAt(createdAt: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(createdAt);
-}
 
 export default async function OrdersPage({
   searchParams,
@@ -56,6 +52,7 @@ export default async function OrdersPage({
   const includeCancelled = showCancelled === "1";
 
   const db = getDb();
+  const { timezone } = await getBusinessSettings();
   const rows = includeCancelled
     ? await db.select().from(orders).orderBy(desc(orders.createdAt)).limit(200)
     : await db
@@ -119,7 +116,7 @@ export default async function OrdersPage({
                     </Link>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-[var(--color-muted)]">
-                    {formatPlacedAt(order.createdAt)}
+                    {formatDateTime(order.createdAt, timezone)}
                   </td>
                   <td className="px-4 py-3 text-[var(--color-muted)]">{order.customerName}</td>
                   <td className="px-4 py-3 text-[var(--color-muted)]">{order.packageName}</td>

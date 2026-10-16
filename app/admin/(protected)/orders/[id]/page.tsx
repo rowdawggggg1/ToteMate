@@ -1,3 +1,4 @@
+import { formatDateTime } from "@/lib/format-datetime";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { asc, desc, eq, isNull, and } from "drizzle-orm";
@@ -66,6 +67,7 @@ export default async function OrderDetailPage({
     .where(eq(businessSettings.id, 1))
     .limit(1);
   const settings = settingsRows[0];
+  const businessTimezone = settings?.timezone ?? "America/Edmonton";
   const feeDefaults: FeeDefaults = settings
     ? {
         late: settings.lateFeeCentsPerToteDay || undefined,
@@ -105,16 +107,19 @@ export default async function OrderDetailPage({
         </div>
         <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-sm">
           <h2 className="mb-2 font-medium text-[var(--color-text)]">Dates</h2>
+          <p className="text-[var(--color-muted)]">
+            Placed: {formatDateTime(order.createdAt, businessTimezone)}
+          </p>
           <p>Delivery: {order.confirmedDeliveryDate}</p>
           <p>Pickup: {order.confirmedPickupDate}</p>
           {order.actualDeliveredAt && (
             <p className="text-[var(--color-muted)]">
-              Delivered: {new Date(order.actualDeliveredAt).toLocaleString()}
+              Delivered: {formatDateTime(order.actualDeliveredAt, businessTimezone)}
             </p>
           )}
           {order.actualPickedUpAt && (
             <p className="text-[var(--color-muted)]">
-              Picked up: {new Date(order.actualPickedUpAt).toLocaleString()}
+              Picked up: {formatDateTime(order.actualPickedUpAt, businessTimezone)}
             </p>
           )}
         </div>

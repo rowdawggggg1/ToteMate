@@ -20,7 +20,12 @@ export function getStripe(): Stripe {
         "STRIPE_SECRET_KEY is not set. Add it to your environment configuration (see .env.example)."
       );
     }
-    client = new Stripe(key);
+    // Patch 5: an explicit (shorter-than-default) timeout, so a stalled
+    // Stripe request fails fast with a catchable error instead of
+    // (combined with Stripe's 80s default) running out the clock on the
+    // serverless function's own execution limit -- see the comment above
+    // fetchWithTimeout in lib/routing.ts for why that matters.
+    client = new Stripe(key, { timeout: 20_000 });
   }
   return client;
 }

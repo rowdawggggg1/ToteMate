@@ -1,3 +1,5 @@
+import { formatDateTime } from "@/lib/format-datetime";
+import { getBusinessSettings } from "@/lib/availability";
 import Link from "next/link";
 import { asc, eq } from "drizzle-orm";
 import { getDb } from "@/lib/db";
@@ -6,6 +8,7 @@ import { admins } from "@/lib/db/schema";
 export const dynamic = "force-dynamic";
 
 export default async function DriversListPage() {
+  const { timezone } = await getBusinessSettings();
   const db = getDb();
   const rows = await db
     .select()
@@ -46,7 +49,7 @@ export default async function DriversListPage() {
                 <p className="text-sm text-[var(--color-muted)]">{driver.email}</p>
                 {driver.lastLoginAt && (
                   <p className="text-xs text-[var(--color-muted)]">
-                    Last signed in {new Date(driver.lastLoginAt).toLocaleString()}
+                    Last signed in {formatDateTime(driver.lastLoginAt, timezone)}
                   </p>
                 )}
               </div>

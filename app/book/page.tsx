@@ -9,6 +9,15 @@ import { BookingWizard } from "./booking-wizard";
 
 export const dynamic = "force-dynamic";
 
+// Raises how long Vercel lets this route -- including the booking Server
+// Actions the wizard calls from it (app/book/actions.ts) -- run before
+// killing it: platform default is 10s on Hobby / 15s on Pro; the booking
+// pipeline makes several outbound calls (geocode, routing, Stripe). This
+// is a *route segment config*, so it must live here in a page/route file:
+// a "use server" file (actions.ts) may only export async functions, and
+// putting it there broke the build. Hobby plans cap at 10s regardless.
+export const maxDuration = 30;
+
 export default async function BookPage({
   searchParams,
 }: {

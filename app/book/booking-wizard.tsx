@@ -67,6 +67,23 @@ function addWeeksClientSide(dateStr: string, weeks: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Rejects if `promise` hasn't settled within `ms` -- see handleReviewSubmit. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 export function BookingWizard({
   currency,
   minLeadTimeDays,
@@ -203,28 +220,51 @@ export function BookingWizard({
       .filter(([, qty]) => qty > 0)
       .map(([addOnId, quantity]) => ({ addOnId, quantity }));
 
-    const result = await submitBookingAction({
-      packageId: selectedPackage.id,
-      addOnSelections,
-      extensionWeeks,
-      customerName,
-      customerEmail,
-      customerPhone,
-      requestedDeliveryDate,
-      preferredDeliveryWindow: preferredDeliveryWindow || undefined,
-      preferredPickupWindow: preferredPickupWindow || undefined,
-      deliveryAddress,
-      deliveryInstructions: deliveryInstructions || undefined,
-      deliveryLatLngOverride,
-      pickupSameAsDelivery,
-      pickupAddress: pickupSameAsDelivery ? undefined : pickupAddress,
-      pickupInstructions: pickupSameAsDelivery ? undefined : pickupInstructions || undefined,
-      pickupLatLngOverride: pickupSameAsDelivery ? undefined : pickupLatLngOverride,
-      agreementVersionId: agreement.id,
-      agreementSignatureDataUrl: signedDataUrl,
-      referralCode: referralCode.trim() || undefined,
-      giftCardCode: giftCardCode.trim() || undefined,
-    });
+    // Patch 5: a client-side safety valve on top of the server-side
+    // timeouts in lib/routing.ts/lib/stripe.ts -- if something in between
+    // (a slow network, the platform itself) swallows the response instead
+    // of ever rejecting, the button would otherwise stay stuck on
+    // "Checking availability..." forever with no way for the customer to
+    // retry. After 35s, give up waiting and show a normal, retryable error
+    // instead (the server-side call may still complete in the background;
+    // that's fine -- it either stages a booking the customer can start
+    // fresh past, same as any other abandoned checkout, or is a real order
+    // that's simply not reflected here, which they'd see via their
+    // confirmation email).
+    let result: CreateBookingResult;
+    try {
+      result = await withTimeout(
+        submitBookingAction({
+          packageId: selectedPackage.id,
+          addOnSelections,
+          extensionWeeks,
+          customerName,
+          customerEmail,
+          customerPhone,
+          requestedDeliveryDate,
+          preferredDeliveryWindow: preferredDeliveryWindow || undefined,
+          preferredPickupWindow: preferredPickupWindow || undefined,
+          deliveryAddress,
+          deliveryInstructions: deliveryInstructions || undefined,
+          deliveryLatLngOverride,
+          pickupSameAsDelivery,
+          pickupAddress: pickupSameAsDelivery ? undefined : pickupAddress,
+          pickupInstructions: pickupSameAsDelivery ? undefined : pickupInstructions || undefined,
+          pickupLatLngOverride: pickupSameAsDelivery ? undefined : pickupLatLngOverride,
+          agreementVersionId: agreement.id,
+          agreementSignatureDataUrl: signedDataUrl,
+          referralCode: referralCode.trim() || undefined,
+          giftCardCode: giftCardCode.trim() || undefined,
+        }),
+        35_000
+      );
+    } catch {
+      setSubmitting(false);
+      setSubmitError(
+        "This is taking much longer than expected. Please check your connection and try again."
+      );
+      return;
+    }
 
     setSubmitting(false);
 
@@ -402,10 +442,12 @@ export function BookingWizard({
                 />
               </FormField>
 
-              <AddressFields address={deliveryAddress} onChange={setDeliveryAddress} />
-              <AddressMapChecker
+              <AddressFields
                 address={deliveryAddress}
-                onOverrideChange={setDeliveryLatLngOverride}
+                onChange={(next) => {
+                  setDeliveryAddress(next);
+                  setDeliveryLatLngOverride(null);
+                }}
               />
               <FormField label="Delivery instructions (recommended)">
                 <textarea
@@ -462,10 +504,12 @@ export function BookingWizard({
                     className={inputClass}
                   />
                 </FormField>
-                <AddressFields address={pickupAddress} onChange={setPickupAddress} />
-                <AddressMapChecker
+                <AddressFields
                   address={pickupAddress}
-                  onOverrideChange={setPickupLatLngOverride}
+                  onChange={(next) => {
+                    setPickupAddress(next);
+                    setPickupLatLngOverride(null);
+                  }}
                 />
                 <FormField label="Pickup instructions (optional)">
                   <textarea
@@ -559,6 +603,40 @@ export function BookingWizard({
             </div>
           </div>
 
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-semibold text-[var(--color-text)]">
+                Confirm {pickupSameAsDelivery ? "delivery & pickup" : "delivery"} location
+              </h2>
+              <p className="mt-2 rounded-lg bg-[var(--color-primary)]/10 px-3 py-2 text-sm text-[var(--color-text)]">
+                <strong>Please drag the pin onto your house</strong> (or tap the map where it is).
+                We use this exact spot to calculate your delivery distance and price accurately, and
+                it helps our driver find you.
+              </p>
+              <div className="mt-3">
+                <AddressMapChecker
+                  key={`delivery-${deliveryAddress.street}|${deliveryAddress.city}|${deliveryAddress.postalCode}`}
+                  address={deliveryAddress}
+                  initialOverride={deliveryLatLngOverride}
+                  onOverrideChange={setDeliveryLatLngOverride}
+                />
+              </div>
+            </div>
+            {!pickupSameAsDelivery && (
+              <div>
+                <h3 className="font-medium text-[var(--color-text)]">Confirm pickup location</h3>
+                <div className="mt-3">
+                  <AddressMapChecker
+                    key={`pickup-${pickupAddress.street}|${pickupAddress.city}|${pickupAddress.postalCode}`}
+                    address={pickupAddress}
+                    initialOverride={pickupLatLngOverride}
+                    onOverrideChange={setPickupLatLngOverride}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
           <div>
             <h3 className="font-medium text-[var(--color-text)]">Referral code or gift card (optional)</h3>
             <div className="mt-2 grid gap-3 sm:grid-cols-2">
@@ -646,6 +724,9 @@ export function BookingWizard({
               {booking.deliveryAddressLowConfidence && (
                 <AddressConfidenceWarning onEdit={() => void abandonPendingBookingAndGoTo(2)} />
               )}
+              {!booking.deliveryAddressLowConfidence && booking.deliveryAddressApproximate && (
+                <ApproximateAddressNote />
+              )}
             </div>
             {booking.resolvedPickupAddress && (
               <div>
@@ -653,6 +734,9 @@ export function BookingWizard({
                 <p className="text-[var(--color-muted)]">{booking.resolvedPickupAddress}</p>
                 {booking.pickupAddressLowConfidence && (
                   <AddressConfidenceWarning onEdit={() => void abandonPendingBookingAndGoTo(2)} />
+                )}
+                {!booking.pickupAddressLowConfidence && booking.pickupAddressApproximate && (
+                  <ApproximateAddressNote />
                 )}
               </div>
             )}
@@ -830,6 +914,7 @@ type AddressGeocodePreview = {
   lng: number;
   formatted: string;
   lowConfidence: boolean;
+  approximate: boolean;
 };
 
 /**
@@ -842,15 +927,20 @@ type AddressGeocodePreview = {
  */
 function AddressMapChecker({
   address,
+  initialOverride,
   onOverrideChange,
 }: {
   address: AddressForm;
+  /** A pin the customer already placed earlier (this checker remounts each
+   * time the step is revisited), so it isn't silently forgotten. */
+  initialOverride: { lat: number; lng: number } | null;
   onOverrideChange: (latLng: { lat: number; lng: number } | null) => void;
 }) {
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [preview, setPreview] = useState<AddressGeocodePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pin, setPin] = useState<{ lat: number; lng: number } | null>(null);
+  const [pin, setPin] = useState<{ lat: number; lng: number } | null>(initialOverride);
+  const initialOverrideRef = useRef(initialOverride);
   const onOverrideChangeRef = useRef(onOverrideChange);
   onOverrideChangeRef.current = onOverrideChange;
 
@@ -869,7 +959,7 @@ function AddressMapChecker({
     onOverrideChangeRef.current(null);
   }, [addressKey]);
 
-  async function check() {
+  async function check(keepExistingPin = false) {
     setStatus("loading");
     setError(null);
     const result = await previewGeocodeAction(address);
@@ -886,13 +976,23 @@ function AddressMapChecker({
       lng: result.lng,
       formatted: result.formatted,
       lowConfidence: result.lowConfidence,
+      approximate: result.approximate,
     });
-    setPin(null);
-    onOverrideChangeRef.current(null);
+    // Keep a pin the customer already placed; otherwise start at the match.
+    const keep = keepExistingPin ? initialOverrideRef.current : null;
+    setPin(keep);
+    if (!keep) onOverrideChangeRef.current(null);
     setStatus("ready");
   }
 
   const canCheck = Boolean(address.street && address.city);
+
+  // Look the address up automatically as soon as this appears, so the map
+  // is just *there* -- no link to find and click first.
+  useEffect(() => {
+    if (canCheck) void check(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div>
@@ -902,7 +1002,7 @@ function AddressMapChecker({
         disabled={!canCheck || status === "loading"}
         className="text-sm font-medium text-[var(--color-primary)] hover:underline disabled:cursor-not-allowed disabled:text-[var(--color-muted)] disabled:no-underline"
       >
-        {status === "loading" ? "Checking address…" : "Preview on map"}
+        {status === "loading" ? "Locating your address…" : preview ? "Re-check address" : "Show on map"}
       </button>
 
       {error && <p className="mt-1 text-xs text-[var(--color-error)]">{error}</p>}
@@ -912,8 +1012,15 @@ function AddressMapChecker({
           {preview.lowConfidence && !pin && (
             <p className="text-xs text-[var(--color-warning)]">
               We couldn&apos;t match this address with full confidence -- the pin below is our
-              best guess. Drag it to the right spot if it&apos;s off, or add more detail (like a
-              house number) to the address above.
+              best guess. Please drag it onto your house, or go back and double-check the
+              house number and city.
+            </p>
+          )}
+          {preview.approximate && !preview.lowConfidence && !pin && (
+            <p className="text-xs text-[var(--color-muted)]">
+              We found your street but our map doesn&apos;t have a point for your exact house
+              number yet. That&apos;s fine -- we&apos;ll deliver to the address you typed. Dragging
+              the pin onto your house makes the delivery calculation exact.
             </p>
           )}
           <p className="text-xs text-[var(--color-muted)]">Resolved to: {preview.formatted}</p>
@@ -928,7 +1035,7 @@ function AddressMapChecker({
           <p className="text-xs text-[var(--color-muted)]">
             {pin
               ? "Pin adjusted -- we'll deliver/pick up from this exact spot."
-              : "If the pin isn't in the right place, drag it there."}
+              : "Drag the pin onto your house (or tap the map) so we can calculate delivery accurately."}
           </p>
         </div>
       )}
@@ -991,11 +1098,20 @@ function NextButton({
   );
 }
 
+function ApproximateAddressNote() {
+  return (
+    <p className="mt-1.5 text-xs text-[var(--color-muted)]">
+      Our map doesn&apos;t have a point for your exact house number, so distance is measured to
+      your street. We&apos;ll deliver to the address you entered.
+    </p>
+  );
+}
+
 function AddressConfidenceWarning({ onEdit }: { onEdit: () => void }) {
   return (
     <p className="mt-1.5 rounded-lg bg-[var(--color-warning)]/15 px-2.5 py-1.5 text-xs text-[var(--color-warning)]">
-      We couldn't match this to an exact address -- it may be based on a general area rather than
-      your specific house. If this looks wrong, add a house/unit number or more detail.{" "}
+      We couldn&apos;t confidently place this address -- it may be a different town, or based on a
+      general area rather than your specific house. Please double-check the house number and city.{" "}
       <button type="button" onClick={onEdit} className="font-medium underline">
         Edit address
       </button>

@@ -47,6 +47,17 @@ export function AddressMapPreview({ lat, lng, onPinMoved, className }: AddressMa
     if (!container) return;
     let cancelled = false;
 
+    // Leaflet's stylesheet is loaded from a <link> at runtime (once) rather
+    // than imported from node_modules, so a CSS-import quirk in the build
+    // can never silently leave the map as a blank/garbled box.
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "leaflet-css";
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
     void import("leaflet").then((leafletModule) => {
       if (cancelled || mapRef.current) return;
       const L = leafletModule.default;
@@ -82,6 +93,15 @@ export function AddressMapPreview({ lat, lng, onPinMoved, className }: AddressMa
         const pos = marker.getLatLng();
         onPinMovedRef.current(pos.lat, pos.lng);
       });
+      // Tapping/clicking the map also moves the pin -- much easier than
+      // dragging a small marker with a thumb on a phone.
+      map.on("click", (e) => {
+        marker.setLatLng(e.latlng);
+        onPinMovedRef.current(e.latlng.lat, e.latlng.lng);
+      });
+      // The container may not have its final size yet when the map is
+      // created (the page is still laying out); re-measure shortly after.
+      setTimeout(() => map.invalidateSize(), 250);
 
       mapRef.current = map;
       markerRef.current = marker;

@@ -62,7 +62,7 @@ import {
 import {
   calculateRouteDistanceKm,
   geocodeAndValidateServiceAreaStructured,
-  isLowConfidenceGeocode,
+  assessGeocode,
   isWithinMaxRadius,
   RoutingError,
   type StructuredAddressInput,
@@ -100,8 +100,12 @@ export function formatAddressForGeocoding(a: AddressInput): string {
 /** Maps our address form fields onto ORS's structured-geocoding params --
  * see geocodeAddressStructured's doc comment for why structured (discrete
  * fields) beats free-text concatenation for precise civic-number matches. */
-function toStructuredGeocodeInput(a: AddressInput): StructuredAddressInput {
+function toStructuredGeocodeInput(
+  a: AddressInput,
+  focus?: { lat: number; lng: number }
+): StructuredAddressInput {
   return {
+    focus,
     address: a.street,
     locality: a.city,
     region: a.province,
@@ -175,6 +179,11 @@ export type CreateBookingResult =
       deliveryAddressLowConfidence: boolean;
       resolvedPickupAddress: string | null;
       pickupAddressLowConfidence: boolean;
+      // Customer DID type a house number, but our map data has no point for
+      // that exact house -- price/distance is based on the street. A soft
+      // note, not a "go back and add a house number" warning.
+      deliveryAddressApproximate: boolean;
+      pickupAddressApproximate: boolean;
     }
   | { ok: false; error: string };
 
@@ -183,11 +192,25 @@ export async function createBookingOrderAndPaymentIntent(
 ): Promise<CreateBookingResult> {
   const db = getDb();
 
-  // Opportunistic cleanup of abandoned staged bookings. Best-effort: a
-  // failure here should never block a real booking from going through.
-  await db.delete(pendingBookings).where(lt(pendingBookings.expiresAt, new Date())).catch(() => {});
+  // Per-step timing, written to the server logs (Vercel -> Logs, search
+  // "[booking-timing]") so a slow checkout can be traced to the exact step
+  // that's slow instead of guessed at.
+  const startedAt = Date.now();
+  let lastLap = startedAt;
+  const lap = (label: string) => {
+    const now = Date.now();
+    console.log(`[booking-timing] ${label}: +${now - lastLap}ms (total ${now - startedAt}ms)`);
+    lastLap = now;
+  };
 
-  const settings = await getBusinessSettings();
+  // Opportunistic cleanup of abandoned staged bookings. Best-effort: a
+  // failure here should never block a real booking from going through, so
+  // it runs alongside the settings lookup rather than ahead of it.
+  const [settings] = await Promise.all([
+    getBusinessSettings(),
+    db.delete(pendingBookings).where(lt(pendingBookings.expiresAt, new Date())).catch(() => {}),
+  ]);
+  lap("settings + cleanup");
 
   if (settings.bookingPaused) {
     return { ok: false, error: "Online booking is temporarily paused. Please check back soon." };
@@ -195,20 +218,30 @@ export async function createBookingOrderAndPaymentIntent(
 
   // --- Package & add-ons -------------------------------------------------
 
-  const packageRows = await db
-    .select()
-    .from(packages)
-    .where(and(eq(packages.id, input.packageId), eq(packages.isActive, true)))
-    .limit(1);
+  // Package, add-ons and the agreement version are independent lookups.
+  const [packageRows, availableAddOns, agreementRows] = await Promise.all([
+    db
+      .select()
+      .from(packages)
+      .where(and(eq(packages.id, input.packageId), eq(packages.isActive, true)))
+      .limit(1),
+    db.select().from(addOns).where(eq(addOns.isActive, true)),
+    db
+      .select()
+      .from(rentalAgreementVersions)
+      .where(
+        and(
+          eq(rentalAgreementVersions.id, input.agreementVersionId),
+          eq(rentalAgreementVersions.status, "active")
+        )
+      )
+      .limit(1),
+  ]);
+  lap("package + add-ons + agreement");
   const pkg = packageRows[0];
   if (!pkg) {
     return { ok: false, error: "That package is no longer available. Please choose another." };
   }
-
-  const availableAddOns = await db
-    .select()
-    .from(addOns)
-    .where(eq(addOns.isActive, true));
 
   const weeklyExtensionAddOn = availableAddOns.find(
     (a) => a.packageId === pkg.id && a.isWeeklyExtension
@@ -237,12 +270,91 @@ export async function createBookingOrderAndPaymentIntent(
     });
   }
 
+  // --- Service area & routing (started FIRST, awaited after availability) --
+  //
+  // Geocoding + routing are slow external calls and don't depend on the
+  // availability checks at all (or vice versa), so the whole routing
+  // pipeline is kicked off now and runs while the database availability
+  // checks below do their work, instead of the two happening back to back.
+  // The promise never rejects (every failure is returned as a value), so an
+  // early return below can't leave an unhandled rejection behind.
+
+  if (!settings.businessOriginLat || !settings.businessOriginLng) {
+    return {
+      ok: false,
+      error:
+        "Delivery pricing isn't configured yet (no business origin set). Please contact us to book.",
+    };
+  }
+  const origin = {
+    lat: Number(settings.businessOriginLat),
+    lng: Number(settings.businessOriginLng),
+  };
+
+  const routingPromise = (async () => {
+    try {
+      // Delivery and (when different) pickup are independent -> parallel.
+      // Search results are biased toward the business origin so a common
+      // street name ("60 St") resolves to the nearby town first.
+      const focus = origin;
+      const deliveryGeocodeP = geocodeAndValidateServiceAreaStructured(
+        toStructuredGeocodeInput(input.deliveryAddress, focus),
+        settings.serviceAreaProvinceCode
+      );
+      const pickupGeocodeP = input.pickupSameAsDelivery
+        ? deliveryGeocodeP
+        : geocodeAndValidateServiceAreaStructured(
+            toStructuredGeocodeInput(input.pickupAddress ?? input.deliveryAddress, focus),
+            settings.serviceAreaProvinceCode
+          );
+      const [deliveryGeocode, pickupGeocode] = await Promise.all([deliveryGeocodeP, pickupGeocodeP]);
+
+      // Patch 5: use the customer's map-preview pin adjustment (if any) as
+      // the actual point to route from, instead of the geocoder's own
+      // match -- see CreateBookingInput.deliveryLatLngOverride's doc
+      // comment for why this doesn't also change what the service-area
+      // check validated against.
+      const deliveryCoords = input.deliveryLatLngOverride ?? {
+        lat: deliveryGeocode.lat,
+        lng: deliveryGeocode.lng,
+      };
+      const pickupCoords = input.pickupSameAsDelivery
+        ? deliveryCoords
+        : input.pickupLatLngOverride ?? { lat: pickupGeocode.lat, lng: pickupGeocode.lng };
+
+      const [deliveryDistanceKm, pickupDistanceKm] = input.pickupSameAsDelivery
+        ? await calculateRouteDistanceKm(origin, deliveryCoords).then((d) => [d, d] as const)
+        : await Promise.all([
+            calculateRouteDistanceKm(origin, deliveryCoords),
+            calculateRouteDistanceKm(origin, pickupCoords),
+          ]);
+
+      return {
+        ok: true as const,
+        deliveryGeocode,
+        pickupGeocode,
+        deliveryCoords,
+        pickupCoords,
+        deliveryDistanceKm,
+        pickupDistanceKm,
+      };
+    } catch (err) {
+      if (err instanceof RoutingError) {
+        return { ok: false as const, error: err.message };
+      }
+      console.error("[booking] unexpected routing failure", err);
+      return {
+        ok: false as const,
+        error: "We couldn't verify that address right now. Please try again.",
+      };
+    }
+  })();
+
   // --- Dates & availability -----------------------------------------------
 
   // These three checks don't depend on each other's results (the pickup
   // date is derived from the requested delivery date + package duration,
-  // not from deliveryDateCheck), so run them concurrently instead of one
-  // after another.
+  // not from deliveryDateCheck), so run them concurrently.
   const confirmedPickupDate = addWeeksToDateString(
     input.requestedDeliveryDate,
     pkg.rentalDurationWeeks + input.extensionWeeks
@@ -256,6 +368,7 @@ export async function createBookingOrderAndPaymentIntent(
     checkDailyCapacity(confirmedPickupDate),
     checkToteAvailability(input.requestedDeliveryDate, confirmedPickupDate, pkg.toteQuantity),
   ]);
+  lap("availability checks");
 
   if (!deliveryDateCheck.ok) {
     return { ok: false, error: deliveryDateCheck.reason ?? "That delivery date isn't available." };
@@ -270,85 +383,19 @@ export async function createBookingOrderAndPaymentIntent(
     };
   }
 
-  // --- Service area & routing ----------------------------------------------
-
-  if (!settings.businessOriginLat || !settings.businessOriginLng) {
-    return {
-      ok: false,
-      error:
-        "Delivery pricing isn't configured yet (no business origin set). Please contact us to book.",
-    };
+  const routing = await routingPromise;
+  lap("routing (geocode + distance) -- ran in parallel with availability");
+  if (!routing.ok) {
+    return { ok: false, error: routing.error };
   }
-  const origin = {
-    lat: Number(settings.businessOriginLat),
-    lng: Number(settings.businessOriginLng),
-  };
-
-  // Delivery and (when different) pickup each need a geocode call and then
-  // a distance call. Those two steps are run in parallel for delivery vs.
-  // pickup (they're independent of each other) rather than one after the
-  // other -- this is the main reason checkout used to feel slow, since
-  // four sequential external API round-trips easily added up to several
-  // seconds.
-  let deliveryGeocode;
-  let pickupGeocode;
-  try {
-    if (input.pickupSameAsDelivery) {
-      deliveryGeocode = await geocodeAndValidateServiceAreaStructured(
-        toStructuredGeocodeInput(input.deliveryAddress),
-        settings.serviceAreaProvinceCode
-      );
-      pickupGeocode = deliveryGeocode;
-    } else {
-      [deliveryGeocode, pickupGeocode] = await Promise.all([
-        geocodeAndValidateServiceAreaStructured(
-          toStructuredGeocodeInput(input.deliveryAddress),
-          settings.serviceAreaProvinceCode
-        ),
-        geocodeAndValidateServiceAreaStructured(
-          toStructuredGeocodeInput(input.pickupAddress ?? input.deliveryAddress),
-          settings.serviceAreaProvinceCode
-        ),
-      ]);
-    }
-  } catch (err) {
-    if (err instanceof RoutingError) {
-      return { ok: false, error: err.message };
-    }
-    throw err;
-  }
-
-  // Patch 5: use the customer's map-preview pin adjustment (if any) as the
-  // actual point to route from, instead of the geocoder's own match -- see
-  // CreateBookingInput.deliveryLatLngOverride's doc comment for why this
-  // doesn't also change what the service-area check (above) validated
-  // against.
-  const deliveryCoords = input.deliveryLatLngOverride ?? {
-    lat: deliveryGeocode.lat,
-    lng: deliveryGeocode.lng,
-  };
-  const pickupCoords = input.pickupSameAsDelivery
-    ? deliveryCoords
-    : input.pickupLatLngOverride ?? { lat: pickupGeocode.lat, lng: pickupGeocode.lng };
-
-  let deliveryDistanceKm: number;
-  let pickupDistanceKm: number;
-  try {
-    if (input.pickupSameAsDelivery) {
-      deliveryDistanceKm = await calculateRouteDistanceKm(origin, deliveryCoords);
-      pickupDistanceKm = deliveryDistanceKm;
-    } else {
-      [deliveryDistanceKm, pickupDistanceKm] = await Promise.all([
-        calculateRouteDistanceKm(origin, deliveryCoords),
-        calculateRouteDistanceKm(origin, pickupCoords),
-      ]);
-    }
-  } catch (err) {
-    if (err instanceof RoutingError) {
-      return { ok: false, error: err.message };
-    }
-    throw err;
-  }
+  const {
+    deliveryGeocode,
+    pickupGeocode,
+    deliveryCoords,
+    pickupCoords,
+    deliveryDistanceKm,
+    pickupDistanceKm,
+  } = routing;
 
   const maxRadius = settings.maxDeliveryRadiusKm ? Number(settings.maxDeliveryRadiusKm) : null;
   if (!isWithinMaxRadius(deliveryDistanceKm, maxRadius) || !isWithinMaxRadius(pickupDistanceKm, maxRadius)) {
@@ -360,24 +407,29 @@ export async function createBookingOrderAndPaymentIntent(
 
   // A manual pin placement means the customer already resolved the
   // ambiguity themselves, so there's nothing left to warn them about.
+  const deliveryAssessment = assessGeocode(deliveryGeocode, {
+    street: input.deliveryAddress.street,
+    city: input.deliveryAddress.city,
+  });
+  const pickupAssessment = input.pickupSameAsDelivery
+    ? deliveryAssessment
+    : assessGeocode(pickupGeocode, {
+        street: (input.pickupAddress ?? input.deliveryAddress).street,
+        city: (input.pickupAddress ?? input.deliveryAddress).city,
+      });
   const deliveryAddressLowConfidence =
-    !input.deliveryLatLngOverride && isLowConfidenceGeocode(deliveryGeocode);
+    !input.deliveryLatLngOverride && deliveryAssessment.lowConfidence;
+  const deliveryAddressApproximate =
+    !input.deliveryLatLngOverride && deliveryAssessment.approximate;
   const pickupAddressLowConfidence = input.pickupSameAsDelivery
     ? deliveryAddressLowConfidence
-    : !input.pickupLatLngOverride && isLowConfidenceGeocode(pickupGeocode);
+    : !input.pickupLatLngOverride && pickupAssessment.lowConfidence;
+  const pickupAddressApproximate = input.pickupSameAsDelivery
+    ? deliveryAddressApproximate
+    : !input.pickupLatLngOverride && pickupAssessment.approximate;
 
   // --- Agreement -------------------------------------------------------------
 
-  const agreementRows = await db
-    .select()
-    .from(rentalAgreementVersions)
-    .where(
-      and(
-        eq(rentalAgreementVersions.id, input.agreementVersionId),
-        eq(rentalAgreementVersions.status, "active")
-      )
-    )
-    .limit(1);
   const agreement = agreementRows[0];
   if (!agreement) {
     return {
@@ -458,7 +510,9 @@ export async function createBookingOrderAndPaymentIntent(
 
   const manageToken = generateManageToken();
   const orderId = crypto.randomUUID();
+  lap("pricing + referral/gift card");
   const orderNumber = await allocateNextOrderNumber();
+  lap("order number");
 
   const orderValues = {
     orderNumber,
@@ -603,6 +657,8 @@ export async function createBookingOrderAndPaymentIntent(
       deliveryAddressLowConfidence,
       resolvedPickupAddress: input.pickupSameAsDelivery ? null : pickupGeocode.formatted,
       pickupAddressLowConfidence,
+      deliveryAddressApproximate,
+      pickupAddressApproximate,
     };
   }
 
@@ -621,6 +677,7 @@ export async function createBookingOrderAndPaymentIntent(
     email: input.customerEmail,
     phone: input.customerPhone,
   });
+  lap("stripe customer");
   const paymentIntent = await stripe.paymentIntents.create({
     amount: finalAmountCents,
     currency: settings.currency.toLowerCase(),
@@ -630,6 +687,7 @@ export async function createBookingOrderAndPaymentIntent(
     metadata: { orderId, orderNumber },
   });
 
+  lap("stripe payment intent");
   if (!paymentIntent.client_secret) {
     await stripe.paymentIntents.cancel(paymentIntent.id).catch(() => {});
     return { ok: false, error: "We couldn't start payment for this booking. Please try again." };
@@ -655,6 +713,7 @@ export async function createBookingOrderAndPaymentIntent(
     return { ok: false, error: "We couldn't create your booking. Please try again." };
   }
 
+  lap("staged booking saved");
   return {
     ok: true,
     orderId,
@@ -668,6 +727,8 @@ export async function createBookingOrderAndPaymentIntent(
     deliveryAddressLowConfidence,
     resolvedPickupAddress: input.pickupSameAsDelivery ? null : pickupGeocode.formatted,
     pickupAddressLowConfidence,
+    deliveryAddressApproximate,
+    pickupAddressApproximate,
   };
 }
 

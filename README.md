@@ -904,5 +904,71 @@ too if you used test codes/cards. New column:
 hero, instead of near the bottom below the reviews section -- so service
 area is one of the first things a visitor sees.
 
+**9. Fixed: checkout getting permanently stuck on "Checking
+availability..." with nothing in the logs.** A `fetch()` call with no
+timeout just hangs if the routing provider stalls or a connection drops
+silently -- there's nothing for `catch`/`console.error` to report, and on
+Vercel it just runs out the clock on the function's own execution-time
+limit, which kills the request without an application-level error. Added:
+an explicit ~12s timeout (via `AbortController`) on every OpenRouteService
+call in `lib/routing.ts`, a shorter explicit timeout on the Stripe client
+(`lib/stripe.ts`), `export const maxDuration = 30` on the booking Server
+Actions (`app/book/actions.ts`, raises Vercel's allowed execution time --
+**note:** a Hobby-plan project's limit is hard-fixed at 10s regardless and
+ignores this; if checkouts still stall after deploying this patch, that's
+the next thing to check in the Vercel project's plan/Functions settings),
+and a 35-second client-side give-up-and-show-an-error fallback in the
+booking wizard itself, so the button can never again be stuck indefinitely
+with no way for the customer to retry.
+
+**10. Address messaging + speed follow-up.** (a) An address that already
+has a house number no longer gets told to "add a house number": if the map
+data we use simply has no point for that exact house (common in smaller
+Alberta towns), the match falls back to the street, and the customer now
+sees a soft note ("we'll deliver to the address you typed") instead of a
+warning. The strong warning is reserved for a match in a *different town*
+than typed, or a street-level match with no house number given.
+(b) Address searches are now biased toward your business location and
+restricted to Canada, so a common street name like "60 St" resolves to
+the nearby town first. (c) Checkout speed: geocoding/routing now runs *at
+the same time as* the database availability checks (previously after),
+and several independent lookups run together. Every checkout now writes
+`[booking-timing] <step>: +Nms` lines to the server logs (Vercel -> Logs)
+so any remaining slowness can be pinned on one specific step.
+
+**11. Map now appears automatically.** The "Preview on map" link on the
+address step was easy to miss (and optional), so it's gone from there. The
+agree-and-sign step now opens with "Confirm delivery location": the address
+is looked up on its own and an OpenStreetMap map with a pin is shown right
+away -- tap the map or drag the pin to correct it. (Pickup gets its own map
+if it's a different address.) A pin placed earlier is remembered if the
+customer navigates back and forth, and is cleared if they edit the address.
+Leaflet's stylesheet is now loaded at runtime from unpkg instead of
+imported from node_modules.
+
 **No other schema changes.** Only new column this patch:
 `business_settings.next_order_number`.
+
+## Patch 6 (this delivery) -- build fix + order times in the right timezone
+
+(Patch 5's fixes are included -- this is the full project.)
+
+**1. Build fix.** `app/book/actions.ts` is a `"use server"` file, and
+Next.js only allows async functions to be exported from those -- the
+`export const maxDuration = 30` I had added there (Patch 5, item 9) broke
+`npm run build`, and the "cannot find submitBookingAction / ..." errors in
+`booking-wizard.tsx` were just fallout from that module failing to compile.
+`maxDuration` is a *route segment config*, so it now lives in
+`app/book/page.tsx` (still 30s, and it still covers the booking Server
+Actions called from that page). Re-scanned every `"use server"` file in the
+project: no other non-async exports. (A Hobby-plan Vercel project caps
+function time at 10s regardless of this setting.)
+
+**2. Order times were wrong.** Server-rendered pages run on Vercel, which
+is on UTC, and the Orders list formatted "Placed" without a timezone -- so
+it showed UTC instead of your local time. New `lib/format-datetime.ts`
+formats in the timezone set in Business Settings (default
+America/Edmonton). Applied to the Orders list "Placed" column, the order
+detail page (which now also shows a "Placed:" line, plus Delivered/Picked
+up times), and the drivers/realtors "Last signed in" lines. No schema
+change.

@@ -10,10 +10,9 @@ import {
 import { getBusinessSettings } from "@/lib/availability";
 import {
   geocodeAndValidateServiceAreaStructured,
-  isLowConfidenceGeocode,
+  assessGeocode,
   RoutingError,
 } from "@/lib/routing";
-
 /**
  * Thin Server Action boundary so the client wizard can call the booking
  * pipeline directly (not through a <form>) while keeping lib/orders.ts a
@@ -48,7 +47,14 @@ export async function isOrderReadyAction(orderId: string): Promise<boolean> {
 }
 
 export type GeocodePreviewResult =
-  | { ok: true; lat: number; lng: number; formatted: string; lowConfidence: boolean }
+  | {
+      ok: true;
+      lat: number;
+      lng: number;
+      formatted: string;
+      lowConfidence: boolean;
+      approximate: boolean;
+    }
   | { ok: false; error: string };
 
 /**
@@ -67,9 +73,14 @@ export async function previewGeocodeAction(address: {
   country: string;
 }): Promise<GeocodePreviewResult> {
   const settings = await getBusinessSettings();
+  const focus =
+    settings.businessOriginLat && settings.businessOriginLng
+      ? { lat: Number(settings.businessOriginLat), lng: Number(settings.businessOriginLng) }
+      : undefined;
   try {
     const geocode = await geocodeAndValidateServiceAreaStructured(
       {
+        focus,
         address: address.street,
         locality: address.city,
         region: address.province,
@@ -78,12 +89,14 @@ export async function previewGeocodeAction(address: {
       },
       settings.serviceAreaProvinceCode
     );
+    const assessment = assessGeocode(geocode, { street: address.street, city: address.city });
     return {
       ok: true,
       lat: geocode.lat,
       lng: geocode.lng,
       formatted: geocode.formatted,
-      lowConfidence: isLowConfidenceGeocode(geocode),
+      lowConfidence: assessment.lowConfidence,
+      approximate: assessment.approximate,
     };
   } catch (err) {
     if (err instanceof RoutingError) {

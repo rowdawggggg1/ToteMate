@@ -35,6 +35,10 @@ export type GeocodeResult = {
    * what was asked for, e.g. a street with no civic number). Null if not
    * supplied. */
   matchType: "exact" | "interpolated" | "fallback" | null;
+  /** City/town the provider matched (locality, else local admin area).
+   * Used to catch a match that landed in a different town than the one the
+   * customer typed (e.g. "60 St" in Beaumont instead of Camrose). */
+  locality: string | null;
 };
 
 /**
@@ -57,6 +61,50 @@ export function isLowConfidenceGeocode(geocode: GeocodeResult): boolean {
   );
 }
 
+/** True if the street line starts with a civic (house) number, allowing an
+ * optional unit prefix ("Unit 4, 123 Main St", "#4 - 123 Main St"). A rural
+ * road like "Township Road 444" has no leading civic number. */
+export function hasCivicNumber(street: string): boolean {
+  return /^\s*(?:(?:unit|apt|apartment|suite|#)\s*\w+[\s,-]+)?\d+[a-z]?(?:\s|-)\S/i.test(street);
+}
+
+function normalizePlace(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+/**
+ * Customer-facing assessment of a geocode, given what they actually typed.
+ *  - lowConfidence: worth warning about and asking them to fix -- the match
+ *    is in a different town than typed, or they gave NO house number and we
+ *    could only match a street/area.
+ *  - approximate: they DID give a house number, but the map data we use has
+ *    no point for that exact house, so the match (and distance pricing)
+ *    falls back to the street. That's a map-data gap, not a typo -- telling
+ *    them to "add a house number" is wrong; the written address is still
+ *    what the driver uses. Shown as a soft note instead.
+ */
+export function assessGeocode(
+  geocode: GeocodeResult,
+  typed: { street: string; city: string }
+): { lowConfidence: boolean; approximate: boolean } {
+  const typedCity = normalizePlace(typed.city);
+  const matchedCity = geocode.locality ? normalizePlace(geocode.locality) : "";
+  const cityMismatch =
+    typedCity !== "" &&
+    matchedCity !== "" &&
+    !matchedCity.includes(typedCity) &&
+    !typedCity.includes(matchedCity);
+  if (cityMismatch) return { lowConfidence: true, approximate: false };
+
+  const streetLevelOnly =
+    geocode.accuracy === "centroid" || geocode.matchType === "fallback";
+
+  if (hasCivicNumber(typed.street)) {
+    return { lowConfidence: false, approximate: streetLevelOnly };
+  }
+  return { lowConfidence: isLowConfidenceGeocode(geocode), approximate: false };
+}
+
 export class RoutingError extends Error {
   constructor(message: string) {
     super(message);
@@ -76,6 +124,28 @@ function getOrsApiKey(): string {
     );
   }
   return key;
+}
+
+// Patch 5: every call to the routing provider goes through this, instead
+// of a bare `fetch`. Without an explicit timeout, a `fetch()` call that
+// never gets a response (the provider stalls, a network hiccup drops the
+// connection without an error) just hangs -- there's no automatic cutoff.
+// On Vercel, that silently runs out the clock on the serverless function's
+// own execution-time limit, which kills the request with NO application-
+// level error logged (nothing for `catch` to catch, nothing for
+// console.error to report) -- exactly the "stuck on 'Checking
+// availability...' with nothing in the logs" symptom. Aborting after a
+// fixed timeout turns that into an ordinary, visible RoutingError instead.
+const ORS_FETCH_TIMEOUT_MS = 12_000;
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ORS_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /**
@@ -120,14 +190,25 @@ function parseGeocodeFeature(
     confidence,
     accuracy,
     matchType,
+    locality:
+      typeof props.locality === "string"
+        ? props.locality
+        : typeof props.localadmin === "string"
+          ? props.localadmin
+          : null,
   };
 }
 
 async function fetchOrsGeocode(url: string): Promise<any> {
   let response: Response;
   try {
-    response = await fetch(url);
-  } catch {
+    response = await fetchWithTimeout(url);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new RoutingError(
+        "The routing service is taking too long to respond. Please try again in a moment."
+      );
+    }
     throw new RoutingError(
       "Could not reach the routing service to verify this address. Please try again."
     );
@@ -172,6 +253,10 @@ export type StructuredAddressInput = {
   region?: string;
   postalcode?: string;
   country?: string;
+  /** Bias results toward this point (the business origin). With a street
+   * name as common as "60 St", this is what makes the nearby town win over
+   * identically-named streets in other Alberta towns. */
+  focus?: { lat: number; lng: number };
 };
 
 /**
@@ -206,6 +291,11 @@ export async function geocodeAddressStructured(
   if (input.region?.trim()) params.set("region", input.region.trim());
   if (input.postalcode?.trim()) params.set("postalcode", input.postalcode.trim());
   if (input.country?.trim()) params.set("country", input.country.trim());
+  params.set("boundary.country", "CA");
+  if (input.focus) {
+    params.set("focus.point.lat", String(input.focus.lat));
+    params.set("focus.point.lon", String(input.focus.lng));
+  }
 
   const url = `${ORS_STRUCTURED_GEOCODE_URL}?${params.toString()}`;
   const fallbackLabel = [address, input.locality, input.region, input.postalcode, input.country]
@@ -293,8 +383,13 @@ export async function calculateRouteDistanceKm(
 
   let response: Response;
   try {
-    response = await fetch(url);
-  } catch {
+    response = await fetchWithTimeout(url);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new RoutingError(
+        "The routing service is taking too long to respond. Please try again in a moment."
+      );
+    }
     throw new RoutingError(
       "Could not reach the routing service to calculate distance. Please try again."
     );
